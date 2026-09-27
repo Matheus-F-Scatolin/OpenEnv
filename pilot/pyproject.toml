@@ -1,0 +1,14 @@
+[project]
+name = "openenv-curriculum-smoke"
+version = "0.1.0"
+description = "Smoke test for RFC 013: GRPO + curriculum on OpenEnv's reasoning_gym_env, on Apple Silicon (MLX)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "mlx-lm",
+    "reasoning-gym>=0.1.24",
+    "openenv==0.6.0",
+    "numpy",
+]
+
+[tool.uv]
+package = false
