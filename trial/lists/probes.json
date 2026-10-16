@@ -1,0 +1,87 @@
+[
+ {
+  "run_dir": "trial/runs/ladder-probe/llama3.2-1b-baseline-s0",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "baseline",
+   "--model",
+   "llama3.2-1b",
+   "--ladder",
+   "staircase",
+   "--eval-per-tier",
+   "100",
+   "--out",
+   "trial/runs/ladder-probe"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/cost-probe/llama3.2-1b-curriculum-tokens-s0",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum-tokens",
+   "--seed",
+   "0",
+   "--steps",
+   "100",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/cost-probe"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/cost-probe/llama3.2-1b-curriculum-tokens-mix-s0",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum-tokens-mix",
+   "--seed",
+   "0",
+   "--steps",
+   "100",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/cost-probe"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/cost-probe/llama3.2-1b-curriculum-tokens-mix-decay-s0",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum-tokens-mix-decay",
+   "--seed",
+   "0",
+   "--steps",
+   "100",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/cost-probe"
+  ]
+ }
+]

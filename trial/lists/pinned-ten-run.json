@@ -1,0 +1,222 @@
+[
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-uniform-s0",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "0",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-curriculum-s0",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "0",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-uniform-s1",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "1",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-curriculum-s1",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "1",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-uniform-s2",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "2",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-curriculum-s2",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "2",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-uniform-s3",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "3",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-curriculum-s3",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "3",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-uniform-s4",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "4",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/ten-run-pinned/llama3.2-1b-curriculum-s4",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "4",
+   "--steps",
+   "30",
+   "--eval-every",
+   "10",
+   "--out",
+   "trial/runs/ten-run-pinned"
+  ]
+ }
+]

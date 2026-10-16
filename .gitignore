@@ -1,0 +1,17 @@
+# Written by a run, never committed
+*.safetensors
+train_texts.jsonl.gz
+trial/lists/queue.pid
+trial/lists/queue-log.jsonl
+trial/lists/output/
+
+# Tooling
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# The lock file is the experiment's pin
+!uv.lock

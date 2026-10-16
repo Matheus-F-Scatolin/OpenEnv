@@ -1,0 +1,48 @@
+[
+ {
+  "run_dir": "trial/runs/seed0-repeat/llama3.2-1b-uniform-s0",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "0",
+   "--token-budget",
+   "1000000",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/seed0-repeat"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/seed0-repeat/llama3.2-1b-curriculum-s0",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "0",
+   "--token-budget",
+   "1000000",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/seed0-repeat"
+  ]
+ }
+]

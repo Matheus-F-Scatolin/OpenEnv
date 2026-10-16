@@ -1,0 +1,102 @@
+[
+ {
+  "run_dir": "trial/runs/trial/llama3.2-1b-uniform-s1",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "1",
+   "--token-budget",
+   "5000000",
+   "--eval-every-tokens",
+   "250000",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/trial"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/trial/llama3.2-1b-curriculum-s1",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "1",
+   "--token-budget",
+   "5000000",
+   "--eval-every-tokens",
+   "250000",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/trial"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/trial/llama3.2-1b-uniform-s2",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "2",
+   "--token-budget",
+   "5000000",
+   "--eval-every-tokens",
+   "250000",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/trial"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/trial/llama3.2-1b-curriculum-s2",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "100",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "2",
+   "--token-budget",
+   "5000000",
+   "--eval-every-tokens",
+   "250000",
+   "--eval-every",
+   "100",
+   "--out",
+   "trial/runs/trial"
+  ]
+ }
+]

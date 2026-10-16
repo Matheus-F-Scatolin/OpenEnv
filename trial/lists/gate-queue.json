@@ -1,0 +1,112 @@
+[
+ {
+  "run_dir": "trial/runs/gate-queue/llama3.2-1b-uniform-s1",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "4",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "1",
+   "--steps",
+   "2",
+   "--eval-every",
+   "2",
+   "--out",
+   "trial/runs/gate-queue"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/gate-queue/llama3.2-1b-baseline-s0",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "baseline",
+   "--model",
+   "llama3.2-1b",
+   "--ladder",
+   "staircase",
+   "--eval-per-tier",
+   "2",
+   "--out",
+   "trial/runs/gate-queue"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/gate-queue/llama3.2-1b-curriculum-tokens-mix-s1",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "4",
+   "--sampler",
+   "curriculum-tokens-mix",
+   "--seed",
+   "1",
+   "--steps",
+   "2",
+   "--eval-every",
+   "2",
+   "--out",
+   "trial/runs/gate-queue"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/gate-queue/llama3.2-1b-curriculum-tokens-mix-decay-s1",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "4",
+   "--sampler",
+   "curriculum-tokens-mix-decay",
+   "--seed",
+   "1",
+   "--steps",
+   "2",
+   "--eval-every",
+   "2",
+   "--out",
+   "trial/runs/gate-queue"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/gate-queue/llama3.2-1b-curriculum-s2",
+  "cmd": [
+   "-m",
+   "trial.train",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "4",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "2",
+   "--token-budget",
+   "20000",
+   "--eval-every-tokens",
+   "10000",
+   "--snapshot-every-tokens",
+   "10000",
+   "--out",
+   "trial/runs/gate-queue"
+  ]
+ }
+]

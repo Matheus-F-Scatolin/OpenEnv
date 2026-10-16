@@ -1,0 +1,227 @@
+
+===== replay.py =====
+uniform replay: steps 2196 tier-set mismatches 0
+uniform per-tier tokens/completion (whole run): [11.3, 27.8, 40.0, 64.2, 79.3]
+  quarter 1: [11.5, 25.7, 37.5, 62.3, 78.6]
+  quarter 2: [9.2, 28.4, 40.9, 64.3, 79.3]
+  quarter 3: [13.1, 28.3, 41.0, 64.9, 79.8]
+  quarter 4: [11.0, 28.6, 40.8, 65.8, 79.3]
+  first 100 steps: [10.3, 25.3, 33.9, 61.8, 82.0]
+uniform realised mix: [0.201, 0.202, 0.2, 0.2, 0.198]
+curriculum per-tier tokens/completion (regression on expected mix, rough): [-5.8, 56.1, 108.7, 120.1, 132.5]
+curriculum expected mix over run: [0.071, 0.08, 0.287, 0.33, 0.232]
+  quarter 1 mix: [0.092, 0.117, 0.451, 0.235, 0.106]
+  quarter 2 mix: [0.067, 0.079, 0.262, 0.364, 0.228]
+  quarter 3 mix: [0.066, 0.068, 0.269, 0.332, 0.264]
+  quarter 4 mix: [0.057, 0.058, 0.166, 0.389, 0.329]
+tokens/completion: uniform observed 44.4; uniform-policy costs x uniform mix 44.4; uniform-policy costs x curriculum mix 54.1; curriculum observed 105.7
+
+===== analyze.py =====
+== uniform: steps=2196 episodes=140544 tokens=6237158 secs=9000.4
+   eps/s=15.62 tok/s=693.0 tok/completion=44.4
+   signal groups=3608 per1k eps=25.7 per M tok=578 per min=24.1
+   gen_s=7064 (78%) train_s=1934 (21%)
+   gen tok/s (gen only)=883; train s per signal group=0.536
+   peak_mem at steps [(1, 6.46), (10, 7.28), (50, 13.0), (100, 13.0), (200, 13.0), (500, 15.27), (1000, 15.27), (2196, 15.27)]
+   first step peak_mem>8: 14
+   first step peak_mem>10: 47
+   first step peak_mem>12: 47
+   first step peak_mem>14: 334
+   first step peak_mem>15: 334
+   gen_tokens/step: min=949 med=2819.0 p95=3826 max=4799  (max possible 24576)
+   evals: step, Mtok, succ, by_tier, mean_completion_tokens, eval_s
+         0  0.00  52.0 {'0': 1.0, '1': 1.0, '2': 0.53, '3': 0.07, '4': 0.0}   73.1 35.8
+       100  0.27  50.6 {'0': 1.0, '1': 0.99, '2': 0.48, '3': 0.06, '4': 0.0}   41.1 21.7
+       200  0.53  58.6 {'0': 1.0, '1': 1.0, '2': 0.85, '3': 0.06, '4': 0.02}   42.4 21.5
+       300  0.81  62.2 {'0': 1.0, '1': 0.99, '2': 0.87, '3': 0.17, '4': 0.08}   42.3 21.0
+       400  1.09  65.2 {'0': 1.0, '1': 1.0, '2': 0.94, '3': 0.18, '4': 0.14}   46.3 22.2
+       500  1.38  65.4 {'0': 1.0, '1': 1.0, '2': 0.92, '3': 0.27, '4': 0.08}   45.2 25.2
+       600  1.66  64.8 {'0': 1.0, '1': 1.0, '2': 0.92, '3': 0.2, '4': 0.12}   44.5 21.5
+       700  1.94  62.8 {'0': 1.0, '1': 1.0, '2': 0.88, '3': 0.14, '4': 0.12}   44.3 21.5
+       800  2.22  62.4 {'0': 1.0, '1': 1.0, '2': 0.93, '3': 0.09, '4': 0.1}   44.2 21.6
+       900  2.50  66.6 {'0': 1.0, '1': 1.0, '2': 0.96, '3': 0.2, '4': 0.17}   44.5 21.6
+      1000  2.79  67.4 {'0': 1.0, '1': 1.0, '2': 0.93, '3': 0.26, '4': 0.18}   44.3 21.5
+      1100  3.08  65.0 {'0': 1.0, '1': 0.99, '2': 0.92, '3': 0.22, '4': 0.12}   45.0 21.8
+      1200  3.37  70.8 {'0': 1.0, '1': 1.0, '2': 0.98, '3': 0.35, '4': 0.21}   45.3 21.6
+      1300  3.65  69.8 {'0': 1.0, '1': 1.0, '2': 0.97, '3': 0.33, '4': 0.19}   45.2 21.6
+      1400  3.93  71.4 {'0': 1.0, '1': 1.0, '2': 0.98, '3': 0.37, '4': 0.22}   45.4 21.7
+      1500  4.23  71.6 {'0': 1.0, '1': 1.0, '2': 0.96, '3': 0.42, '4': 0.2}   45.3 21.7
+      1600  4.52  73.2 {'0': 1.0, '1': 1.0, '2': 0.99, '3': 0.43, '4': 0.24}   45.4 21.7
+      1700  4.81  72.0 {'0': 1.0, '1': 1.0, '2': 0.98, '3': 0.38, '4': 0.24}   45.0 21.6
+      1800  5.10  72.6 {'0': 1.0, '1': 1.0, '2': 0.96, '3': 0.41, '4': 0.26}   45.1 21.6
+      1900  5.38  72.8 {'0': 1.0, '1': 1.0, '2': 0.94, '3': 0.42, '4': 0.28}   44.9 21.6
+      2000  5.68  74.0 {'0': 1.0, '1': 1.0, '2': 0.96, '3': 0.53, '4': 0.21}   45.0 21.6
+      2100  5.97  73.6 {'0': 1.0, '1': 1.0, '2': 0.95, '3': 0.49, '4': 0.24}   45.4 21.6
+      2196  6.24  73.2 {'0': 1.0, '1': 1.0, '2': 0.96, '3': 0.46, '4': 0.24}   46.2 21.7
+   total eval seconds=515 over 23 evals
+   quarter 1: tok/compl=43.2 signal/step=1.47 s/step=4.16 sig per Mtok=532
+   quarter 2: tok/compl=44.2 signal/step=1.56 s/step=3.99 sig per Mtok=551
+   quarter 3: tok/compl=45.1 signal/step=1.79 s/step=4.13 sig per Mtok=619
+   quarter 4: tok/compl=45.0 signal/step=1.76 s/step=4.12 sig per Mtok=610
+== curriculum: steps=1081 episodes=69184 tokens=7307818 secs=9000.7
+   eps/s=7.69 tok/s=811.9 tok/completion=105.6
+   signal groups=2465 per1k eps=35.6 per M tok=337 per min=16.4
+   gen_s=6664 (74%) train_s=2335 (26%)
+   gen tok/s (gen only)=1097; train s per signal group=0.947
+   peak_mem at steps [(1, 7.41), (10, 15.24), (50, 15.24), (100, 15.24), (200, 15.24), (500, 15.27), (1000, 15.3), (1081, 15.3)]
+   first step peak_mem>8: 7
+   first step peak_mem>10: 7
+   first step peak_mem>12: 7
+   first step peak_mem>14: 7
+   first step peak_mem>15: 7
+   gen_tokens/step: min=3368 med=6809 p95=8200 max=10204  (max possible 24576)
+   evals: step, Mtok, succ, by_tier, mean_completion_tokens, eval_s
+         0  0.00  52.0 {'0': 1.0, '1': 1.0, '2': 0.53, '3': 0.07, '4': 0.0}   73.1 35.1
+       100  0.62  58.0 {'0': 1.0, '1': 1.0, '2': 0.85, '3': 0.05, '4': 0.0}   98.9 36.3
+       200  1.28  60.8 {'0': 1.0, '1': 1.0, '2': 0.86, '3': 0.13, '4': 0.05}   81.9 33.6
+       300  1.87  65.2 {'0': 1.0, '1': 0.99, '2': 0.96, '3': 0.25, '4': 0.06}   82.2 32.2
+       400  2.52  65.4 {'0': 1.0, '1': 0.99, '2': 0.93, '3': 0.25, '4': 0.1}   82.3 32.1
+       500  3.25  68.4 {'0': 1.0, '1': 1.0, '2': 0.97, '3': 0.31, '4': 0.14}   89.7 36.7
+       600  3.96  64.0 {'0': 1.0, '1': 1.0, '2': 0.95, '3': 0.17, '4': 0.08}   87.0 34.1
+       700  4.64  63.6 {'0': 1.0, '1': 1.0, '2': 0.93, '3': 0.2, '4': 0.05}   87.7 32.9
+       800  5.31  69.0 {'0': 1.0, '1': 1.0, '2': 0.93, '3': 0.34, '4': 0.18}   85.9 31.7
+       900  6.02  67.8 {'0': 1.0, '1': 1.0, '2': 0.94, '3': 0.34, '4': 0.11}   86.5 53.7
+      1000  6.73  71.4 {'0': 1.0, '1': 1.0, '2': 0.96, '3': 0.39, '4': 0.22}   86.3 59.6
+      1081  7.31  72.4 {'0': 1.0, '1': 1.0, '2': 0.97, '3': 0.43, '4': 0.22}   84.8 32.0
+   total eval seconds=450 over 12 evals
+   quarter 1: tok/compl=98.1 signal/step=2.13 s/step=6.99 sig per Mtok=339
+   quarter 2: tok/compl=107.2 signal/step=2.21 s/step=7.29 sig per Mtok=323
+   quarter 3: tok/compl=106.2 signal/step=2.03 s/step=6.85 sig per Mtok=299
+   quarter 4: tok/compl=111.1 signal/step=2.74 s/step=12.17 sig per Mtok=386
+   probs@ 1 {'0': 0.284, '1': 0.18, '2': 0.249, '3': 0.118, '4': 0.169} p_hat {'0': 0.5, '1': 0.89, '2': 0.779, '3': 0.058, '4': 0.1}
+   probs@ 100 {'0': 0.09, '1': 0.092, '2': 0.52, '3': 0.197, '4': 0.1} p_hat {'0': 0.988, '1': 0.987, '2': 0.829, '3': 0.038, '4': 0.014}
+   probs@ 300 {'0': 0.062, '1': 0.205, '2': 0.287, '3': 0.299, '4': 0.148} p_hat {'0': 0.988, '1': 0.933, '2': 0.887, '3': 0.121, '4': 0.043}
+   probs@ 500 {'0': 0.057, '1': 0.057, '2': 0.269, '3': 0.317, '4': 0.299} p_hat {'0': 0.988, '1': 0.988, '2': 0.884, '3': 0.157, '4': 0.14}
+   probs@ 800 {'0': 0.055, '1': 0.055, '2': 0.325, '3': 0.338, '4': 0.227} p_hat {'0': 0.988, '1': 0.988, '2': 0.818, '3': 0.202, '4': 0.094}
+   probs@ 1081 {'0': 0.057, '1': 0.057, '2': 0.12, '3': 0.41, '4': 0.356} p_hat {'0': 0.988, '1': 0.988, '2': 0.965, '3': 0.368, '4': 0.204}
+
+===== calib.py =====
+curriculum arm: predicted signal groups/step from p_hat (model) vs actual
+  steps    1-100 : predicted 4.58  actual 2.48  ratio 0.54
+  steps  100-300 : predicted 3.92  actual 1.88  ratio 0.48
+  steps  300-600 : predicted 4.66  actual 2.33  ratio 0.50
+  steps  600-900 : predicted 4.70  actual 2.07  ratio 0.44
+  steps  900-1081: predicted 5.78  actual 2.87  ratio 0.50
+
+uniform arm, per tier, by quarter: p (mean reward), model signal 1-p^8-(1-p)^8, actual signal rate, tokens/completion,
+  actual signal groups per million tokens of that tier
+  quarter 1
+    tier 0: p=1.000 model=0.000 actual=-0.044 tok=11.5 sig/Mtok=-479
+    tier 1: p=0.993 model=0.054 actual=0.052 tok=25.7 sig/Mtok=251
+    tier 2: p=0.775 model=0.869 actual=0.388 tok=37.5 sig/Mtok=1295
+    tier 3: p=0.103 model=0.582 actual=0.286 tok=62.3 sig/Mtok=574
+    tier 4: p=0.049 model=0.334 actual=0.227 tok=78.6 sig/Mtok=361
+    overall: 532 signal groups per M tokens; 0.184 signal rate
+  quarter 2
+    tier 0: p=1.000 model=0.000 actual=0.002 tok=9.2 sig/Mtok=32
+    tier 1: p=0.996 model=0.031 actual=-0.021 tok=28.4 sig/Mtok=-91
+    tier 2: p=0.881 model=0.637 actual=0.248 tok=40.9 sig/Mtok=758
+    tier 3: p=0.178 model=0.792 actual=0.379 tok=64.3 sig/Mtok=737
+    tier 4: p=0.139 model=0.697 actual=0.376 tok=79.3 sig/Mtok=592
+    overall: 551 signal groups per M tokens; 0.195 signal rate
+  quarter 3
+    tier 0: p=1.000 model=0.000 actual=-0.011 tok=13.1 sig/Mtok=-107
+    tier 1: p=0.999 model=0.006 actual=0.007 tok=28.3 sig/Mtok=30
+    tier 2: p=0.940 model=0.389 actual=0.193 tok=41.0 sig/Mtok=589
+    tier 3: p=0.347 model=0.967 actual=0.513 tok=64.9 sig/Mtok=987
+    tier 4: p=0.247 model=0.896 actual=0.430 tok=79.8 sig/Mtok=674
+    overall: 619 signal groups per M tokens; 0.223 signal rate
+  quarter 4
+    tier 0: p=1.000 model=0.000 actual=0.042 tok=11.0 sig/Mtok=479
+    tier 1: p=0.999 model=0.007 actual=-0.006 tok=28.6 sig/Mtok=-28
+    tier 2: p=0.948 model=0.347 actual=0.171 tok=40.8 sig/Mtok=523
+    tier 3: p=0.398 model=0.982 actual=0.456 tok=65.8 sig/Mtok=866
+    tier 4: p=0.267 model=0.917 actual=0.441 tok=79.3 sig/Mtok=694
+    overall: 610 signal groups per M tokens; 0.220 signal rate
+
+===== alloc.py =====
+== uniform arm, quarter 1:  p_hat=[0.988, 0.981, 0.768, 0.113, 0.06]  model signal=[0.093, 0.142, 0.879, 0.616, 0.39]  measured signal=[0.0, 0.052, 0.388, 0.286, 0.227]
+  uniform                            probs=[0.2, 0.2, 0.2, 0.2, 0.2]  sig/1k ep= 23.8 (1.00x)  sig/Mtok=  553 (1.00x)  tok/ep= 43.1
+  RFC cost=episodes  (model+eps)     probs=[0.06, 0.08, 0.39, 0.28, 0.19]  sig/1k ep= 34.8 (1.46x)  sig/Mtok=  703 (1.27x)  tok/ep= 49.6
+  RFC cost=tokens    (model+eps)/c   probs=[0.2, 0.12, 0.41, 0.18, 0.09]  sig/1k ep= 29.3 (1.23x)  sig/Mtok=  755 (1.37x)  tok/ep= 38.9
+  empirical signal   (s+eps)/c       probs=[0.15, 0.14, 0.4, 0.19, 0.12]  sig/1k ep= 30.6 (1.28x)  sig/Mtok=  736 (1.33x)  tok/ep= 41.6
+  oracle per token   argmax s/c      probs=[0.0, 0.0, 1.0, 0.0, 0.0]  sig/1k ep= 48.5 (2.04x)  sig/Mtok= 1293 (2.34x)  tok/ep= 37.5
+  oracle per episode argmax s        probs=[0.0, 0.0, 1.0, 0.0, 0.0]  sig/1k ep= 48.5 (2.04x)  sig/Mtok= 1293 (2.34x)  tok/ep= 37.5
+== uniform arm, quarter 4:  p_hat=[0.988, 0.987, 0.937, 0.4, 0.273]  model signal=[0.093, 0.101, 0.405, 0.983, 0.922]  measured signal=[0.0, 0.0, 0.171, 0.456, 0.441]
+  uniform                            probs=[0.2, 0.2, 0.2, 0.2, 0.2]  sig/1k ep= 26.7 (1.00x)  sig/Mtok=  592 (1.00x)  tok/ep= 45.1
+  RFC cost=episodes  (model+eps)     probs=[0.05, 0.05, 0.17, 0.37, 0.35]  sig/1k ep= 44.4 (1.66x)  sig/Mtok=  721 (1.22x)  tok/ep= 61.5
+  RFC cost=tokens    (model+eps)/c   probs=[0.23, 0.09, 0.19, 0.27, 0.21]  sig/1k ep= 31.5 (1.18x)  sig/Mtok=  657 (1.11x)  tok/ep= 48.0
+  empirical signal   (s+eps)/c       probs=[0.18, 0.07, 0.21, 0.3, 0.24]  sig/1k ep= 35.0 (1.31x)  sig/Mtok=  679 (1.15x)  tok/ep= 51.5
+  oracle per token   argmax s/c      probs=[0.0, 0.0, 0.0, 1.0, 0.0]  sig/1k ep= 57.0 (2.13x)  sig/Mtok=  866 (1.46x)  tok/ep= 65.8
+  oracle per episode argmax s        probs=[0.0, 0.0, 0.0, 1.0, 0.0]  sig/1k ep= 57.0 (2.13x)  sig/Mtok=  866 (1.46x)  tok/ep= 65.8
+
+===== rates.py =====
+curriculum, steps 1-900 (before throttling): 9.02 eps/s, 942 tok/s, 7.10 s/step, 18.3 signal groups/min, 323 per M tok
+uniform whole run: 15.62 eps/s, 4.10 s/step
+uniform: eval-to-eval diffs SD first half 3.03, second half 1.84 points (divide by 1.41 for per-eval noise)
+curriculum: eval-to-eval diffs SD first half 1.92, second half 3.20 points (divide by 1.41 for per-eval noise)
+budget 2.0 M tokens: uniform 48 min, curriculum(episodes) 35 min, tokens arm 35-48 min; per seed (3 arms) 1.98-2.19 h before evals
+budget 2.5 M tokens: uniform 60 min, curriculum(episodes) 44 min, tokens arm 44-60 min; per seed (3 arms) 2.48-2.74 h before evals
+budget 3.0 M tokens: uniform 72 min, curriculum(episodes) 53 min, tokens arm 53-72 min; per seed (3 arms) 2.97-3.29 h before evals
+budget 5.0 M tokens: uniform 120 min, curriculum(episodes) 88 min, tokens arm 88-120 min; per seed (3 arms) 4.95-5.48 h before evals
+eval seconds per 500-task eval: uniform median 21.6 curriculum median 33.85
+matched-token comparison (curriculum eval -> nearest uniform eval):
+  0.62 M: curriculum 58.0  uniform 58.6 (at 0.53 M)  diff -0.6
+  1.28 M: curriculum 60.8  uniform 65.4 (at 1.38 M)  diff -4.6
+  1.87 M: curriculum 65.2  uniform 62.8 (at 1.94 M)  diff +2.4
+  2.52 M: curriculum 65.4  uniform 66.6 (at 2.50 M)  diff -1.2
+  3.25 M: curriculum 68.4  uniform 70.8 (at 3.37 M)  diff -2.4
+  3.96 M: curriculum 64.0  uniform 71.4 (at 3.93 M)  diff -7.4
+  4.64 M: curriculum 63.6  uniform 73.2 (at 4.52 M)  diff -9.6
+  5.31 M: curriculum 69.0  uniform 72.8 (at 5.38 M)  diff -3.8
+  6.02 M: curriculum 67.8  uniform 73.6 (at 5.97 M)  diff -5.8
+  6.73 M: curriculum 71.4  uniform 73.2 (at 6.24 M)  diff -1.8
+  7.31 M: curriculum 72.4  uniform 73.2 (at 6.24 M)  diff -0.8
+
+===== repro.py =====
+== uniform
+ smoke config: {'steps': 20, 'prompts_per_step': 8, 'group_size': 8, 'max_tokens': 384, 'temperature': 1.0, 'lr': 2e-05, 'micro_batch': 4, 'eval_per_tier': 40, 'seed': 0}
+  step  1: smoke gen_tokens= 4799 mean_reward=0.2188 sig=1 tiers=['0', '2', '3', '4'] | pilot gen_tokens= 4799 mean_reward=0.2188 sig=1 tiers=['0', '2', '3', '4']
+  step  2: smoke gen_tokens= 2925 mean_reward=0.3594 sig=3 tiers=['1', '2', '3', '4'] | pilot gen_tokens= 2925 mean_reward=0.3594 sig=3 tiers=['1', '2', '3', '4']
+  step  3: smoke gen_tokens= 2116 mean_reward=0.6875 sig=1 tiers=['0', '1', '2', '4'] | pilot gen_tokens= 2116 mean_reward=0.6875 sig=1 tiers=['0', '1', '2', '4']
+  step  4: smoke gen_tokens= 2837 mean_reward=0.5104 sig=5 tiers=['0', '1', '2', '3', '4'] | pilot gen_tokens= 2837 mean_reward=0.5104 sig=5 tiers=['0', '1', '2', '3', '4']
+  step  5: smoke gen_tokens= 3358 mean_reward=0.3750 sig=2 tiers=['0', '2', '3', '4'] | pilot gen_tokens= 3358 mean_reward=0.3750 sig=2 tiers=['0', '2', '3', '4']
+  step  6: smoke gen_tokens= 2051 mean_reward=0.5312 sig=1 tiers=['0', '1', '2', '3', '4'] | pilot gen_tokens= 2051 mean_reward=0.5312 sig=1 tiers=['0', '1', '2', '3', '4']
+  step  7: smoke gen_tokens= 3133 mean_reward=0.6250 sig=0 tiers=['0', '1', '3', '4'] | pilot gen_tokens= 3133 mean_reward=0.6250 sig=0 tiers=['0', '1', '3', '4']
+  step  8: smoke gen_tokens= 3300 mean_reward=0.4531 sig=1 tiers=['0', '2', '4'] | pilot gen_tokens= 3300 mean_reward=0.4531 sig=1 tiers=['0', '2', '4']
+  identical gen_tokens in 20/20 first steps
+  smoke eval 0 0.51 74.935 {'0': 1.0, '1': 1.0, '2': 0.5, '3': 0.05, '4': 0.0}
+  smoke eval 10 0.545 43.5 {'0': 1.0, '1': 1.0, '2': 0.55, '3': 0.15, '4': 0.025}
+  smoke eval 20 0.53 47.32 {'0': 1.0, '1': 1.0, '2': 0.55, '3': 0.1, '4': 0.0}
+  smoke peak mem: [6.46, 7.28, 7.28, 7.28, 7.28, 7.28, 7.28, 7.28, 7.28, 7.28, 7.28, 7.28, 7.28, 8.7, 8.7, 8.7, 8.73, 8.73, 8.73, 8.73]
+== curriculum
+ smoke config: {'steps': 20, 'prompts_per_step': 8, 'group_size': 8, 'max_tokens': 384, 'temperature': 1.0, 'lr': 2e-05, 'micro_batch': 4, 'eval_per_tier': 40, 'seed': 0}
+  step  1: smoke gen_tokens= 4221 mean_reward=0.5312 sig=3 tiers=['1', '2', '3', '4'] | pilot gen_tokens= 4221 mean_reward=0.5312 sig=3 tiers=['1', '2', '3', '4']
+  step  2: smoke gen_tokens= 3729 mean_reward=0.3906 sig=3 tiers=['0', '2', '3', '4'] | pilot gen_tokens= 3729 mean_reward=0.3906 sig=3 tiers=['0', '2', '3', '4']
+  step  3: smoke gen_tokens= 5363 mean_reward=0.2656 sig=2 tiers=['1', '2', '3', '4'] | pilot gen_tokens= 5363 mean_reward=0.2656 sig=2 tiers=['1', '2', '3', '4']
+  step  4: smoke gen_tokens= 3693 mean_reward=0.7500 sig=0 tiers=['0', '1', '2', '4'] | pilot gen_tokens= 3693 mean_reward=0.7500 sig=0 tiers=['0', '1', '2', '4']
+  step  5: smoke gen_tokens= 3702 mean_reward=0.4844 sig=3 tiers=['0', '2', '4'] | pilot gen_tokens= 3702 mean_reward=0.4844 sig=3 tiers=['0', '2', '4']
+  step  6: smoke gen_tokens= 3368 mean_reward=0.5000 sig=2 tiers=['0', '2', '3'] | pilot gen_tokens= 3368 mean_reward=0.5000 sig=2 tiers=['0', '2', '3']
+  step  7: smoke gen_tokens= 4278 mean_reward=0.5469 sig=4 tiers=['0', '1', '2', '3'] | pilot gen_tokens= 4278 mean_reward=0.5469 sig=4 tiers=['0', '1', '2', '3']
+  step  8: smoke gen_tokens= 4761 mean_reward=0.3594 sig=2 tiers=['1', '2', '3', '4'] | pilot gen_tokens= 4761 mean_reward=0.3594 sig=2 tiers=['1', '2', '3', '4']
+  identical gen_tokens in 20/20 first steps
+  smoke eval 0 0.51 74.935 {'0': 1.0, '1': 1.0, '2': 0.5, '3': 0.05, '4': 0.0}
+  smoke eval 10 0.525 72.2 {'0': 1.0, '1': 1.0, '2': 0.55, '3': 0.075, '4': 0.0}
+  smoke eval 20 0.51 97.195 {'0': 1.0, '1': 1.0, '2': 0.55, '3': 0.0, '4': 0.0}
+  smoke peak mem: [7.41, 7.41, 7.41, 7.41, 7.41, 7.41, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24, 15.24]
+
+===== overlap.py =====
+== pilot tiers
+  tier terms x digits | distinct train /2000 | distinct test /100 | test questions also in train
+    0   2 x 1         |   200               |  76                | 100/100
+    1   3 x 2         |  1999               | 100                |   0/100
+    2   4 x 3         |  2000               | 100                |   0/100
+    3   5 x 4 neg     |  2000               | 100                |   0/100
+    4   6 x 5 neg     |  2000               | 100                |   0/100
+== staircase d=0..9 (library levels, no negation)
+  tier terms x digits | distinct train /2000 | distinct test /100 | test questions also in train
+    0   2 x 1         |   200               |  76                | 100/100
+    1   3 x 1         |  1576               |  98                |  38/100
+    2   3 x 2         |  1999               | 100                |   1/100
+    3   4 x 2         |  2000               | 100                |   0/100
+    4   4 x 3         |  2000               | 100                |   0/100
+    5   5 x 3         |  2000               | 100                |   0/100
+    6   5 x 4         |  2000               | 100                |   0/100
+    7   6 x 4         |  2000               | 100                |   0/100
+    8   6 x 5         |  2000               | 100                |   0/100
+    9   7 x 5         |  2000               | 100                |   0/100

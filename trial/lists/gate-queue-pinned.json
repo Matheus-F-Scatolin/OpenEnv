@@ -1,0 +1,46 @@
+[
+ {
+  "run_dir": "trial/runs/gate-queue-pinned/llama3.2-1b-uniform-s1",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "4",
+   "--sampler",
+   "uniform",
+   "--seed",
+   "1",
+   "--steps",
+   "2",
+   "--eval-every",
+   "2",
+   "--out",
+   "trial/runs/gate-queue-pinned"
+  ]
+ },
+ {
+  "run_dir": "trial/runs/gate-queue-pinned/llama3.2-1b-curriculum-s1",
+  "cmd": [
+   "trial/smoke_pinned.py",
+   "train",
+   "--model",
+   "llama3.2-1b",
+   "--eval-at-start",
+   "--eval-per-tier",
+   "4",
+   "--sampler",
+   "curriculum",
+   "--seed",
+   "1",
+   "--steps",
+   "2",
+   "--eval-every",
+   "2",
+   "--out",
+   "trial/runs/gate-queue-pinned"
+  ]
+ }
+]

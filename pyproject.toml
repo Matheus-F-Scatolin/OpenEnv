@@ -1,0 +1,37 @@
+[project]
+name = "rfc-013"
+version = "0.1.0"
+description = "RFC 013: task samplers, the trial trainer and its analysis"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "reasoning-gym>=0.1.24",
+    "openenv==0.6.0",
+    "numpy",
+    "matplotlib",
+]
+
+[dependency-groups]
+train = ["mlx-lm"]
+dev = ["pytest>=7.0", "ruff==0.17.0", "usort==1.1.3"]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["pilot", "trial/smoke_pinned.py", "*.md"]
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E402", "E501"]
+
+[tool.usort]
+first_party_detection = false
+excludes = ["trial/smoke_pinned.py"]
