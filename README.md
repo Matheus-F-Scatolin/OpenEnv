@@ -30,15 +30,18 @@ RFC's `TaskSampler` interface.
 - [`trial/lists/`](trial/lists/): the run lists, one JSON entry per run (its folder and its command).
 - [`trial/runs/`](trial/runs/): the 28 run folders, 95 MB. Layout below.
 - [`analysis/`](analysis/): `validate_run` checks a run folder; `report` writes every table and figure;
-  `pilot_evidence/` reads the pilot's logs a second time.
-- [`tests/`](tests/): 303 tests. None needs MLX or a GPU.
+  `calibration` compares the groups with signal the curriculum predicted with those it got; `pilot_evidence/`
+  reads the pilot's logs a second time.
+- [`tests/`](tests/): 337 tests. None needs MLX or a GPU.
 - [`pilot/`](pilot/): the pilot, as on `rfc-013-pilot`, except one sentence of `pilot/README.md` worded
   differently. The trainer and the tests import from it; the analysis reads its logs.
 - [`notes/expectations.md`](notes/expectations.md): the questions, predictions and reading rules, written before
   the runs and unchanged since. See below.
-- [`notes/results/`](notes/results/): the six tables `analysis.report` writes, and its second reading of the
+- [`notes/results/`](notes/results/): the seven tables `analysis.report` writes, and its second reading of the
   pilot's logs (`pilot-evidence.txt`). [`trial.md`](notes/results/trial.md)
-  holds test success per run and the differences between methods.
+  holds test success per run and the differences between methods;
+  [`calibration.md`](notes/results/calibration.md) the predicted and observed groups with signal, and how
+  graded the rewards are.
 - [`figures/`](figures/): the three `trial-*.png` figures from `analysis.report`, and the pilot's figure from
   `pilot/rfc_figure.py`.
 - `pyproject.toml`, `uv.lock`, `.python-version`: Python 3.12, with the pilot's versions of every library
@@ -58,7 +61,7 @@ uv run python -m analysis.report
 git diff --stat
 ```
 
-The report rewrites the seven files of `notes/results/` and the three `trial-*.png` figures. On macOS (Apple
+The report rewrites the eight files of `notes/results/` and the three `trial-*.png` figures. On macOS (Apple
 Silicon) the rewritten files were identical, byte for byte, to the committed ones, so `git diff --stat` shows
 nothing. Other platforms were not tried; their PNG bytes may differ.
 
@@ -139,9 +142,9 @@ Every `config` event has `git_commit` `ca260b9a715704b3b624e3a6876442ff8b363afc`
 a commit of the authors' private working repository, so it cannot be resolved here. Compared with that commit:
 
 - Added or changed after the runs, all of them only reading the logs: `analysis/report.py`, `analysis/figures.py`,
-  `analysis/pilot_evidence/` and `analysis/tables.py`; their tests `tests/analysis/test_figures.py`,
-  `test_pilot_evidence.py` and `test_report.py`; `notes/results/` and the `trial-*.png` figures. The trainer
-  imports nothing from `analysis/` or `tests/`.
+  `analysis/calibration.py`, `analysis/pilot_evidence/` and `analysis/tables.py`; their tests
+  `tests/analysis/test_figures.py`, `test_calibration.py`, `test_pilot_evidence.py` and `test_report.py`;
+  `notes/results/` and the `trial-*.png` figures. The trainer imports nothing from `analysis/` or `tests/`.
 - `pyproject.toml` and `uv.lock` declare `matplotlib` as a direct dependency. It was already locked, at 3.11.2,
   as an indirect one; no locked version changed.
 - Everything else apart from the logs is the same, byte for byte: among it `samplers/`, `trial/*.py`,

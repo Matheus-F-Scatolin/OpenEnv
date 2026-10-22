@@ -104,3 +104,34 @@ Generated tokens per training answer, and in parentheses the share of training a
 | curriculum | 3 | 8.0 | 16.3 | 28.5 | 60.0 | 74.9 |
 | curriculum-tokens | 3 | 13.0 | 34.0 | 47.5 | 69.2 | 83.9 |
 | curriculum-tokens-mix-decay | 3 | 8.0 | 16.3 | 28.5 | 59.8 | 74.5 |
+
+## Machine time per run
+
+Each whole run, not only up to 5 million tokens. Training is the training loop's clock at the last step (`train_elapsed_s`), evaluation the sum of the evaluations' own clocks (`eval_seconds`); everything outside the timed part of each step and each evaluation, such as loading the model, writing logs and saving adapters, is in neither. Seed 0 is the pilot, whose log has both clocks; it is left out of the means.
+
+| method | seed | training hours | evaluation hours | total hours |
+|---|---|---|---|---|
+| uniform | 0 | 2.50 | 0.14 | 2.64 |
+| curriculum | 0 | 2.50 | 0.12 | 2.63 |
+| uniform | 1 | 1.55 | 0.23 | 1.78 |
+| curriculum | 1 | 1.77 | 0.26 | 2.03 |
+| curriculum-tokens | 1 | 1.82 | 0.26 | 2.09 |
+| curriculum-tokens-mix-decay | 1 | 1.57 | 0.29 | 1.86 |
+| uniform | 2 | 1.63 | 0.28 | 1.91 |
+| curriculum | 2 | 2.07 | 0.24 | 2.30 |
+| curriculum-tokens | 2 | 1.04 | 0.62 | 1.66 |
+| curriculum-tokens-mix-decay | 2 | 1.59 | 0.24 | 1.82 |
+| uniform | 3 | 2.32 | 0.23 | 2.55 |
+| curriculum | 3 | 2.06 | 0.21 | 2.27 |
+| curriculum-tokens | 3 | 2.00 | 0.23 | 2.23 |
+| curriculum-tokens-mix-decay | 3 | 2.06 | 0.21 | 2.27 |
+
+Total hours per method, seeds 1-3.
+
+| method | runs | mean | min | max |
+|---|---|---|---|---|
+| uniform | 3 | 2.08 | 1.78 | 2.55 |
+| curriculum | 3 | 2.20 | 2.03 | 2.30 |
+| curriculum-tokens | 3 | 1.99 | 1.66 | 2.23 |
+| curriculum-tokens-mix-decay | 3 | 1.98 | 1.82 | 2.27 |
+| every method | 12 | 2.06 | 1.66 | 2.55 |
