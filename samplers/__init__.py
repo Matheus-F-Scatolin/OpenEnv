@@ -6,6 +6,12 @@ from __future__ import annotations
 
 from .base import has_signal, TaskSampler
 from .curriculum import CurriculumSampler
-from .simple import UniformSampler
+from .simple import SequentialSampler, UniformSampler
 
-__all__ = ["CurriculumSampler", "TaskSampler", "UniformSampler", "has_signal"]
+__all__ = [
+    "CurriculumSampler",
+    "TaskSampler",
+    "SequentialSampler",
+    "UniformSampler",
+    "has_signal",
+]

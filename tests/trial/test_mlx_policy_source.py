@@ -58,7 +58,7 @@ def test_prompt_tokens_differs_only_by_the_date() -> None:
 
 def test_only_this_file_imports_mlx() -> None:
     offenders = []
-    for folder in ("samplers", "trial", "analysis"):
+    for folder in ("samplers", "evals", "trial", "analysis"):
         for path in (ROOT / folder).rglob("*.py"):
             if path.name in ("mlx_policy.py", "smoke_pinned.py"):
                 continue

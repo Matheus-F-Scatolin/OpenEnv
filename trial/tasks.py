@@ -43,6 +43,7 @@ STAIRCASE_LADDER = [
 LADDERS: dict[str, list[dict[str, Any]]] = {
     "pilot": PILOT_LADDER,
     "staircase": STAIRCASE_LADDER,
+    "rfc": STAIRCASE_LADDER,
 }
 SPLIT_SEED_OFFSET = {"train": 0, "test": 500_000_000}
 

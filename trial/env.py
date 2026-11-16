@@ -3,8 +3,9 @@
 """
 Run one task per episode on the in-process `reasoning_gym_env`.
 
-The environment is the pilot's vendored copy, imported from `pilot/vendor/`.
-The reward is whatever the environment's `step()` returns.
+The pilot and staircase ladders use the pilot's copy from `pilot/vendor/`.
+Published tasks use the pinned environment in `trial/vendor/`. The reward
+is whatever the environment's `step()` returns.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from trial.tasks import DATASET, extract_answer
+from trial.tasks import DATASET, extract_answer, LADDERS, make_tasks, STAIRCASE_LADDER
 
 _VENDOR = str(Path(__file__).resolve().parent.parent / "pilot" / "vendor")
 if _VENDOR not in sys.path:
@@ -99,4 +100,62 @@ class TaskEnv:
         return self.env.step(ReasoningGymAction(answer="")).correct_answer
 
 
-__all__ = ["TaskEnv"]
+class PublishedTaskEnv(TaskEnv):
+    """Run the published chain-sum task split with question seed 0.
+
+    Uses the same answer extraction and reward handling as `TaskEnv`.
+    """
+
+    def __init__(self) -> None:
+        from trial.vendor.reasoning_gym_env.server.reasoning_gym_environment import (
+            ReasoningGymEnvironment as PublishedEnvironment,
+        )
+
+        self.ladder = STAIRCASE_LADDER
+        self.env = PublishedEnvironment()
+        self._questions: dict[str, str] = {}
+
+    def _reset(self, task: dict[str, Any]) -> Any:
+        return self.env.reset(split=task["split"], index=task["index"], seed=0)
+
+
+def build_tasks(
+    ladder: str, train_per_tier: int, eval_per_tier: int
+) -> tuple[TaskEnv, list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Build the environment and both task splits before claiming a run folder.
+
+    Args:
+        ladder (`str`):
+            Ladder name: `pilot`, `staircase` or `rfc`.
+        train_per_tier (`int`):
+            Training tasks per difficulty level.
+        eval_per_tier (`int`):
+            Test tasks per difficulty level.
+
+    Returns:
+        `tuple`: Environment, training tasks and test tasks, in that order.
+
+    Raises:
+        `ValueError`: If a published split cannot supply the requested count.
+    """
+    if ladder != "rfc":
+        settings = LADDERS[ladder]
+        return (
+            TaskEnv(settings),
+            make_tasks("train", train_per_tier, settings),
+            make_tasks("test", eval_per_tier, settings),
+        )
+    env = PublishedTaskEnv()
+    counts = {"train": train_per_tier, "test": eval_per_tier}
+    for split, count in counts.items():
+        if count < 0 or count * len(env.ladder) > env.env.num_tasks(split):
+            raise ValueError(f"{count} tasks per level exceeds the {split} split")
+    return (
+        env,
+        env.env.get_task_range("train", 0, train_per_tier * len(env.ladder)),
+        env.env.get_task_range("test", 0, eval_per_tier * len(env.ladder)),
+    )
+
+
+__all__ = ["PublishedTaskEnv", "TaskEnv", "build_tasks"]

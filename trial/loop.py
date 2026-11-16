@@ -18,7 +18,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from samplers import CurriculumSampler, has_signal, TaskSampler, UniformSampler
+from evals import EvalSchedule
+from openenv.core.evals import EvalConfig, EvalHarness, EvalResult
+from samplers import (
+    CurriculumSampler,
+    has_signal,
+    SequentialSampler,
+    TaskSampler,
+    UniformSampler,
+)
 from trial.policy import Policy
 from trial.runlog import environment_info, RunLog, write_json_atomic
 from trial.tasks import ANSWER_RE, LADDERS, PROMPT_DATE
@@ -253,8 +261,8 @@ def evaluate(
     """
     started = time.time()
     records, texts = [], []
-    for start in range(0, len(tasks), EVAL_BATCH):
-        chunk = tasks[start : start + EVAL_BATCH]
+    sampler = SequentialSampler(tasks)
+    while chunk := sampler.sample(EVAL_BATCH):
         prompts = [policy.encode_prompt(env.question(task)) for task in chunk]
         for task, completion in zip(chunk, policy.generate(prompts, max_tokens, 0.0)):
             records.append(
@@ -276,6 +284,76 @@ def evaluate(
     return summary, records, texts
 
 
+class BatchedEvalHarness(EvalHarness):
+    """
+    Evaluate the trainer's policy greedily and retain per-question records.
+
+    Args:
+        policy (`Policy`):
+            Policy evaluated without updating its weights.
+        env (`TaskEnv`):
+            Environment providing questions and rewards.
+        tasks (`list[dict[str, Any]]`):
+            Fixed test tasks in evaluation order.
+    """
+
+    def __init__(
+        self, policy: Policy, *, env: TaskEnv, tasks: list[dict[str, Any]]
+    ) -> None:
+        self.policy = policy
+        self.env = env
+        self.tasks = tasks
+        self.records: list[dict[str, Any]] = []
+        self.texts: list[dict[str, Any]] = []
+
+    def run(
+        self,
+        harness_version: str,
+        library_versions: dict[str, str],
+        dataset: str,
+        eval_parameters: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Evaluate with the configured completion length limit.
+
+        Args:
+            harness_version (`str`):
+                Harness version recorded in the result.
+            library_versions (`dict[str, str]`):
+                Library versions recorded in the result.
+            dataset (`str`):
+                Dataset identifier recorded in the result.
+            eval_parameters (`dict[str, Any]`):
+                Evaluation settings, including `max_tokens`.
+
+        Returns:
+            `dict[str, Any]`: Evaluation totals and timing.
+        """
+        summary, self.records, self.texts = evaluate(
+            self.policy, self.env, self.tasks, eval_parameters["max_tokens"]
+        )
+        return summary
+
+
+def _eval_config(
+    config: RunConfig, harness: BatchedEvalHarness, versions: dict[str, str | None]
+) -> EvalConfig:
+    return EvalConfig(
+        harness_name=harness.name,
+        harness_version="1",
+        library_versions={
+            key: value for key, value in versions.items() if value is not None
+        },
+        dataset="reasoning_gym:chain_sum",
+        eval_parameters={
+            "ladder": config.ladder,
+            "n_tasks": len(harness.tasks),
+            "max_tokens": config.max_tokens,
+            "temperature": 0.0,
+        },
+    )
+
+
 def _config_event(
     config: RunConfig,
     policy: Policy,
@@ -289,6 +367,7 @@ def _config_event(
         "schema_version": 2,
         **asdict(config),
         "tiers": LADDERS[config.ladder],
+        **({"question_seed": 0} if config.ladder == "rfc" else {}),
         **environment_info(ROOT, PROMPT_DATE),
         "prompt_example": policy.prompt_text(env.question(test_tasks[0])),
         "sampler_settings": settings,
@@ -314,27 +393,27 @@ def _write_questions(
 
 def _log_eval(
     log: RunLog,
-    policy: Policy,
-    env: TaskEnv,
-    test_tasks: list[dict[str, Any]],
-    config: RunConfig,
+    harness: BatchedEvalHarness,
+    result: EvalResult,
     step: int,
     train_elapsed: float,
     total: int,
+    *,
+    sampler: TaskSampler | None = None,
 ) -> None:
-    summary, records, texts = evaluate(policy, env, test_tasks, config.max_tokens)
     log.emit(
         {
             "event": "eval",
             "step": step,
             "train_elapsed_s": round(train_elapsed, 1),
             "gen_tokens_total": total,
-            **summary,
+            **result.scores,
+            **({"sampler_metrics": sampler.metrics()} if sampler is not None else {}),
         }
     )
     log.write_eval(
-        [{"step": step, "gen_tokens_total": total, **r} for r in records],
-        [{"step": step, **t} for t in texts],
+        [{"step": step, "gen_tokens_total": total, **r} for r in harness.records],
+        [{"step": step, **t} for t in harness.texts],
     )
 
 
@@ -375,15 +454,17 @@ def train_run(
         raise ValueError("give --steps or --token-budget: a run needs a stop rule")
     group_size = config.group_size
     adapters = log.run_dir / "adapters.safetensors"
-    log.emit(_config_event(config, policy, env, sampler, test_tasks))
+    event = _config_event(config, policy, env, sampler, test_tasks)
+    log.emit(event)
+    harness = BatchedEvalHarness(policy, env=env, tasks=test_tasks)
     _write_questions(log, env, test_tasks)
 
     train_elapsed, total, snapshots = 0.0, 0, 0
     recent_zero: deque[bool] = deque(maxlen=RECENT_GROUPS)
 
-    def run_eval(step: int) -> None:
+    def on_result(step: int, result: EvalResult) -> None:
         nonlocal snapshots
-        _log_eval(log, policy, env, test_tasks, config, step, train_elapsed, total)
+        _log_eval(log, harness, result, step, train_elapsed, total, sampler=sampler)
         policy.save(adapters)
         write_json_atomic(log.run_dir / "sampler_state.json", sampler.state_dict())
         every = config.snapshot_every_tokens
@@ -394,8 +475,14 @@ def train_run(
             shutil.copyfile(adapters, temporary)
             temporary.replace(target)
 
+    schedule = EvalSchedule(
+        harness,
+        _eval_config(config, harness, event["versions"]),
+        every_n_steps=config.eval_every,
+        on_result=on_result,
+    )
     if config.eval_at_start:
-        run_eval(0)
+        schedule.run(0)
 
     step, reason = 0, None
     while reason is None:
@@ -487,14 +574,15 @@ def train_run(
             }
         record["gen_tokens_total"] = total
         record["groups"] = groups
+        record["sampler_metrics"] = sampler.metrics()
         log.emit(record)
         log.write_train_texts(texts)
 
         reason = stop_reason(step, total, config.steps, config.token_budget)
-        if reason or eval_due(
-            step, total_before, total, config.eval_every, config.eval_every_tokens
-        ):
-            run_eval(step)
+        if reason or eval_due(step, total_before, total, 0, config.eval_every_tokens):
+            schedule.run(step)
+        else:
+            schedule.maybe_run(step)
 
     log.emit(
         {
@@ -529,9 +617,12 @@ def baseline_run(
         test_tasks (`list[dict[str, Any]]`):
             The fixed test tasks.
     """
-    log.emit(_config_event(config, policy, env, None, test_tasks))
+    event = _config_event(config, policy, env, None, test_tasks)
+    log.emit(event)
     _write_questions(log, env, test_tasks)
-    _log_eval(log, policy, env, test_tasks, config, 0, 0.0, 0)
+    harness = BatchedEvalHarness(policy, env=env, tasks=test_tasks)
+    result = harness.run_from_config(_eval_config(config, harness, event["versions"]))
+    _log_eval(log, harness, result, 0, 0.0, 0)
     log.emit(
         {
             "event": "done",
@@ -544,6 +635,7 @@ def baseline_run(
 
 
 __all__ = [
+    "BatchedEvalHarness",
     "METHODS",
     "RunConfig",
     "baseline_run",

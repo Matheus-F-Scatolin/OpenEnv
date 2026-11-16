@@ -17,7 +17,7 @@ import sys
 
 from trial.loop import baseline_run, build_sampler, METHODS, RunConfig, train_run
 from trial.runlog import run_dir_for, RunLog
-from trial.tasks import LADDERS, make_tasks
+from trial.tasks import LADDERS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,13 +101,16 @@ def main(argv: list[str] | None = None) -> None:
             The arguments; `sys.argv[1:]` when left out.
     """
     config = config_from_args(build_parser().parse_args(argv))
+    from trial.env import build_tasks
+
+    env, train_tasks, test_tasks = build_tasks(
+        config.ladder, config.train_per_tier, config.eval_per_tier
+    )
     # The run folder is claimed before the model loads: a second run stops at once.
     log = RunLog(run_dir_for(config.out, config.model, config.sampler, config.seed))
 
-    from trial.env import TaskEnv
     from trial.mlx_policy import MlxPolicy
 
-    ladder = LADDERS[config.ladder]
     training = config.cmd == "train"
     policy = MlxPolicy(
         model=config.model,
@@ -116,10 +119,7 @@ def main(argv: list[str] | None = None) -> None:
         micro_batch=config.micro_batch,
         seed=config.seed,
     )
-    env = TaskEnv(ladder)
-    test_tasks = make_tasks("test", config.eval_per_tier, ladder)
     if training:
-        train_tasks = make_tasks("train", config.train_per_tier, ladder)
         sampler = build_sampler(
             config.sampler, train_tasks, group_size=config.group_size, seed=config.seed
         )

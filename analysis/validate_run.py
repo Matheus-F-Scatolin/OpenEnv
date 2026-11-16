@@ -91,6 +91,16 @@ def _check_version_2(run_dir: Path, events: list[dict[str, Any]]) -> str | None:
         return "a baseline has training steps"
     total = 0
     totals = {0: 0}
+    sampler_metrics = {
+        0: dict(
+            groups=0,
+            signal_groups=0,
+            episodes=0,
+            signal_groups_per_episode=0.0,
+            zero_signal_fraction=0.0,
+        )
+    }
+    signal_groups = 0
     for step in steps:
         number = step["step"]
         groups = step["groups"]
@@ -108,6 +118,18 @@ def _check_version_2(run_dir: Path, events: list[dict[str, Any]]) -> str | None:
         if step["gen_tokens_total"] != total:
             return f"step {number}: gen_tokens_total is not the running sum"
         totals[number] = total
+        signal_groups += step["groups_with_signal"]
+        if "sampler_metrics" in step:
+            expected = {
+                "groups": number * config["prompts_per_step"],
+                "episodes": number * config["prompts_per_step"] * config["group_size"],
+                "cost": total,
+                "signal_groups": signal_groups,
+            }
+            for field, value in expected.items():
+                if step["sampler_metrics"].get(field) != value:
+                    return f"step {number}: sampler_metrics.{field} differs from step counters"
+            sampler_metrics[number] = step["sampler_metrics"]
         reached = stop_reason(number, total, config["steps"], config["token_budget"])
         if reached and number < len(steps):
             return f"step {number}: training continued after the {reached} limit"
@@ -142,6 +164,13 @@ def _check_version_2(run_dir: Path, events: list[dict[str, Any]]) -> str | None:
     if not any(e["step"] == len(steps) for e in evaluations):
         return f"no evaluation at the last step ({len(steps)})"
     for evaluation in evaluations:
+        if "sampler_metrics" in evaluation:
+            expected = sampler_metrics.get(evaluation["step"])
+            if expected is None:
+                return f"eval at step {evaluation['step']}: sampler_metrics has no matching step"
+            for field in expected.keys() | evaluation["sampler_metrics"].keys():
+                if evaluation["sampler_metrics"].get(field) != expected.get(field):
+                    return f"eval at step {evaluation['step']}: sampler_metrics.{field} differs from its step"
         own = [r for r in records if r["step"] == evaluation["step"]]
         where = f"eval at step {evaluation['step']}"
         if evaluation["gen_tokens_total"] != totals.get(evaluation["step"]):

@@ -130,7 +130,7 @@ def test_refuses_outside_the_project_and_on_a_full_disk(root: Path) -> None:
 def test_no_file_shadows_a_standard_library_module() -> None:
     shadows = [
         str(path.relative_to(ROOT))
-        for folder in ("samplers", "trial", "analysis")
+        for folder in ("samplers", "evals", "trial", "analysis")
         for path in (ROOT / folder).rglob("*.py")
         if path.stem in sys.stdlib_module_names
     ]
@@ -147,7 +147,7 @@ class TestRunLists:
     ]
 
     def test_there_are_run_lists(self) -> None:
-        assert len(self.entries) == 56
+        assert len(self.entries) == 79
 
     def test_run_folders_are_unique(self) -> None:
         folders = [entry["run_dir"] for _, entry in self.entries]
@@ -169,3 +169,52 @@ class TestRunLists:
         assert args.model == "llama3.2-1b"
         if name != "rehearsal-mac.json" and not name.startswith("gate-queue"):
             assert args.eval_per_tier == 100
+
+
+class TestReferenceLists:
+    def test_paired_order_and_fallback(self) -> None:
+        reference = json.loads((ROOT / "trial/lists/reference.json").read_text())
+        fallback = json.loads(
+            (ROOT / "trial/lists/reference-staircase.json").read_text()
+        )
+        pairs = []
+        for entry in reference:
+            config = config_from_args(train_parser().parse_args(entry["cmd"][2:]))
+            pairs.append((config.seed, config.sampler))
+            assert config.ladder == "rfc"
+            assert config.token_budget == 5_000_000
+            assert config.steps == 0
+            assert config.eval_every == 100 and config.eval_every_tokens == 250_000
+            assert config.eval_at_start and config.eval_per_tier == 100
+        assert pairs == [
+            (seed, method)
+            for seed in range(5, 10)
+            for method in ("uniform", "curriculum")
+        ]
+        expected = json.loads(
+            json.dumps(reference)
+            .replace("trial/runs/reference", "trial/runs/reference-staircase")
+            .replace('"rfc"', '"staircase"')
+        )
+        assert fallback == expected
+
+    def test_reference_gate_cases(self) -> None:
+        entries = json.loads((ROOT / "trial/lists/gate-queue-ref.json").read_text())
+        configs = [
+            config_from_args(train_parser().parse_args(e["cmd"][2:])) for e in entries
+        ]
+        assert [(c.sampler, c.seed) for c in configs] == [
+            ("uniform", 5),
+            ("curriculum", 5),
+            ("baseline", 0),
+        ]
+        assert all(c.ladder == "rfc" for c in configs)
+        assert configs[0].steps == 2 and configs[0].eval_every == 2
+        assert configs[0].eval_at_start and configs[0].eval_per_tier == 4
+        assert configs[1].token_budget == 20_000
+        assert (
+            configs[1].eval_every_tokens == configs[1].snapshot_every_tokens == 10_000
+        )
+        assert configs[1].eval_every == 100 and configs[1].eval_at_start
+        assert configs[1].eval_per_tier == 4
+        assert configs[2].cmd == "baseline" and configs[2].eval_per_tier == 2

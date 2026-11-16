@@ -25,7 +25,7 @@ addopts = "--import-mode=importlib"
 
 [tool.ruff]
 line-length = 88
-extend-exclude = ["pilot", "trial/smoke_pinned.py", "*.md"]
+extend-exclude = ["trial/vendor", "pilot", "trial/smoke_pinned.py", "*.md"]
 force-exclude = true
 
 [tool.ruff.lint]
@@ -34,4 +34,4 @@ ignore = ["E402", "E501"]
 
 [tool.usort]
 first_party_detection = false
-excludes = ["trial/smoke_pinned.py"]
+excludes = ["trial/smoke_pinned.py", "trial/vendor"]

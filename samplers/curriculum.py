@@ -23,26 +23,30 @@ class CurriculumSampler(CountingSampler):
     success rate `p_k` with a prior of one success and one failure. A group of
     `G` answers has at least one success and one failure with probability
     `1 - p_k**G - (1 - p_k)**G`; the level's weight is that signal plus `eps`,
-    divided by the level's cost. Within a level, tasks are shuffled and handed
-    out without replacement.
+    with equal cost per episode by default. Within a level, tasks are shuffled
+    and handed out without replacement.
 
     Levels keep the order in which they first appear in `tasks`.
 
     Args:
         tasks (`Sequence[Any]`):
-            The task specs to sample from. Each is a mapping with an `id`.
+            The task specs, mappings with `key` or `id_key`.
         group_size (`int`):
             Number of answers per group, `G` above.
         key (`str`, *optional*, defaults to `"difficulty"`):
             The field of a task spec that names its level. A task without it is
-            a level of its own, named by its `id`.
+            a level of its own, named by its `id_key`.
+        id_key (`str`, *optional*, defaults to `"id"`):
+            Field identifying tasks without a level.
         cost (`str`, *optional*, defaults to `"episodes"`):
-            `"episodes"`: every level costs the same. `"tokens"`: a level costs
+            For the experiment that compares formulas; absent from the upstream
+            copy, as are `floor` and `prior`. `"episodes"`: equal cost per level.
+            `"tokens"`: a level costs
             the moving average of the costs reported for it, and `update` then
             requires `costs`.
         decay (`float`, *optional*, defaults to `0.9`):
-            Factor applied to a level's counts and cost average at each report
-            for that level. `1.0` never forgets.
+            Factor applied to success and failure counts on reports with scored
+            rewards, and to the cost average on reports with costs.
         eps (`float`, *optional*, defaults to `0.05`):
             Added to every level's signal, so that no level stops being sampled.
         success_threshold (`float`, *optional*, defaults to `1.0`):
@@ -51,14 +55,15 @@ class CurriculumSampler(CountingSampler):
             Seed of the sampler's own random generator.
         floor (`str`, *optional*, defaults to `"additive"`):
             For the experiment that compares formulas; the default is the
-            RFC's. `"additive"`: the weight is `(signal + eps) / cost`.
+            RFC's; absent from the copy proposed upstream. `"additive"` uses
+            `(signal + eps) / cost`.
             `"mixture"`: the weight is `signal / cost`, and every one of the
             `K` levels then keeps at least `eps` of the probability:
             `(1 - K * eps) * weight / total + eps`.
         prior (`str`, *optional*, defaults to `"fixed"`):
             For the experiment that compares formulas; the default is the
-            RFC's. `"fixed"`: the prior of one success and one failure never
-            fades. `"decayed"`: the counts start at one success and one
+            RFC's; absent from the copy proposed upstream. `"fixed"` keeps the
+            prior of one success and one failure. `"decayed"`: the counts start at one success and one
             failure and decay like the data, so the estimate of a solved level
             approaches 1 and its signal approaches 0.
 
@@ -75,7 +80,7 @@ class CurriculumSampler(CountingSampler):
     Examples:
 
     ```python
-    sampler = CurriculumSampler(tasks, group_size=8, cost="tokens")
+    sampler = CurriculumSampler(tasks, group_size=8)
     for task in sampler.sample(8):
         rewards, tokens = run_group(task)
         sampler.update(task, rewards, costs=tokens)
@@ -88,6 +93,7 @@ class CurriculumSampler(CountingSampler):
         *,
         group_size: int,
         key: str = "difficulty",
+        id_key: str = "id",
         cost: str = "episodes",
         decay: float = 0.9,
         eps: float = 0.05,
@@ -113,6 +119,7 @@ class CurriculumSampler(CountingSampler):
         self.prior = prior
         self.group_size = group_size
         self.key = key
+        self.id_key = id_key
         self.cost_unit = cost
         self.decay = decay
         self.eps = eps
@@ -133,7 +140,7 @@ class CurriculumSampler(CountingSampler):
         self._costs: dict[Hashable, float | None] = {k: None for k in self.keys}
 
     def _level(self, task: Any) -> Hashable:
-        return task.get(self.key, task["id"])
+        return task[self.key] if self.key in task else task[self.id_key]
 
     def p_hat(self, k: Hashable) -> float:
         """
@@ -230,7 +237,7 @@ class CurriculumSampler(CountingSampler):
     def update(
         self,
         task: Any,
-        rewards: Sequence[float],
+        rewards: Sequence[float | None],
         costs: Sequence[float] | None = None,
     ) -> None:
         """
@@ -239,28 +246,34 @@ class CurriculumSampler(CountingSampler):
         Args:
             task (`Any`):
                 The task spec the group ran.
-            rewards (`Sequence[float]`):
-                One reward per answer of the group.
+            rewards (`Sequence[float | None]`):
+                One reward per answer. `None` is unscored: counted as spend,
+                never in reward estimates.
             costs (`Sequence[float]`, *optional*):
                 One cost per answer. Required when `cost="tokens"`.
 
         Raises:
             `ValueError`: If `rewards` is empty, `costs` has another length or
-                a value that is not above zero, `costs` is missing although
+                a negative value (or zero with `cost="tokens"`), inconsistent
+                cost reporting, `costs` is missing although
                 `cost="tokens"`, or the task's level is not one of `keys`.
                 Nothing changes then.
         """
         self._check_group(rewards, costs)
         if costs is None and self.cost_unit == "tokens":
             raise ValueError('cost="tokens" needs the costs of every group')
+        if self.cost_unit == "tokens" and any(c == 0 for c in costs):
+            raise ValueError('cost="tokens" needs costs above zero')
         k = self._level(task)
         if k not in self._buckets:
             raise ValueError(f"unknown level {k!r}: not among the sampler's tasks")
         self._count(rewards, costs)
-        successes = sum(reward >= self.success_threshold for reward in rewards)
-        self._successes[k] = self.decay * self._successes[k] + successes
-        failures = len(rewards) - successes
-        self._failures[k] = self.decay * self._failures[k] + failures
+        scored = [reward for reward in rewards if reward is not None]
+        if scored:
+            successes = sum(reward >= self.success_threshold for reward in scored)
+            self._successes[k] = self.decay * self._successes[k] + successes
+            failures = len(scored) - successes
+            self._failures[k] = self.decay * self._failures[k] + failures
         if costs is not None:
             mean = sum(costs) / len(costs)
             previous = self._costs[k]
@@ -274,6 +287,7 @@ class CurriculumSampler(CountingSampler):
         return {
             "group_size": self.group_size,
             "key": self.key,
+            "id_key": self.id_key,
             "cost": self.cost_unit,
             "decay": self.decay,
             "eps": self.eps,

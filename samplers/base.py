@@ -14,7 +14,7 @@ import random
 from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 _SIGNAL_STD = 1e-6
 
 
@@ -65,7 +65,7 @@ class TaskSampler(Protocol):
     def update(
         self,
         task: Any,
-        rewards: Sequence[float],
+        rewards: Sequence[float | None],
         costs: Sequence[float] | None = None,
     ) -> None:
         """
@@ -74,11 +74,21 @@ class TaskSampler(Protocol):
         Args:
             task (`Any`):
                 The task spec the group ran, as `sample` returned it.
-            rewards (`Sequence[float]`):
-                One reward per answer of the group, as the environment gave it.
+            rewards (`Sequence[float | None]`):
+                One reward per answer as the environment gave it. `None` is an
+                unscored answer: counted as spend, never in reward estimates.
             costs (`Sequence[float]`, *optional*):
                 One cost per answer, in the unit the trainer counts (for
                 example generated tokens).
+        """
+        ...
+
+    def metrics(self) -> dict[str, float]:
+        """
+        Return counters and rates for every reported group.
+
+        Returns:
+            `dict[str, float]`: Group, episode and available cost metrics.
         """
         ...
 
@@ -138,31 +148,59 @@ class CountingSampler:
         self.signal_groups = 0
         self.episodes = 0
         self.cost = 0.0
+        self._costs_given: bool | None = None
 
     @staticmethod
     def _check_n(n: int) -> None:
         if n < 0:
             raise ValueError(f"n must be zero or more, got {n}")
 
-    @staticmethod
-    def _check_group(rewards: Sequence[float], costs: Sequence[float] | None) -> None:
+    def _check_group(
+        self, rewards: Sequence[float | None], costs: Sequence[float] | None
+    ) -> None:
         if not rewards:
             raise ValueError("a group needs at least one reward")
+        if self._costs_given is not None and self._costs_given != (costs is not None):
+            raise ValueError("costs must be supplied for every group or for none")
         if costs is None:
             return
         if len(costs) != len(rewards):
             raise ValueError(
                 f"got {len(costs)} costs for {len(rewards)} rewards: one each"
             )
-        if any(cost <= 0 for cost in costs):
-            raise ValueError("every cost must be above zero")
+        if any(cost < 0 for cost in costs):
+            raise ValueError("costs must not be negative")
 
-    def _count(self, rewards: Sequence[float], costs: Sequence[float] | None) -> None:
+    def _count(
+        self, rewards: Sequence[float | None], costs: Sequence[float] | None
+    ) -> None:
+        self._costs_given = costs is not None
         self.groups += 1
-        self.signal_groups += has_signal(rewards)
+        self.signal_groups += has_signal([r for r in rewards if r is not None])
         self.episodes += len(rewards)
         if costs is not None:
             self.cost += float(sum(costs))
+
+    def metrics(self) -> dict[str, float]:
+        """
+        Return accounting counters and signal rates.
+
+        Returns:
+            `dict[str, float]`: Group and episode counts and rates. Cost appears
+            after costs were reported; signal per cost requires a positive total.
+        """
+        result = {
+            "groups": self.groups,
+            "signal_groups": self.signal_groups,
+            "episodes": self.episodes,
+            "signal_groups_per_episode": self.signal_groups_per_episode,
+            "zero_signal_fraction": self.zero_signal_fraction,
+        }
+        if self._costs_given:
+            result["cost"] = self.cost
+            if self.cost > 0:
+                result["signal_groups_per_cost"] = self.signal_groups_per_cost
+        return result
 
     @property
     def signal_groups_per_episode(self) -> float:
@@ -185,6 +223,7 @@ class CountingSampler:
             "version": STATE_VERSION,
             "kind": kind,
             "n_tasks": len(self.tasks),
+            "costs_given": self._costs_given,
             "rng": [version, list(internal), gauss],
             **{name: getattr(self, name) for name in self._COUNTERS},
         }
@@ -199,6 +238,7 @@ class CountingSampler:
             )
 
     def _load_base_state(self, state: dict[str, Any]) -> None:
+        self._costs_given = state["costs_given"]
         version, internal, gauss = state["rng"]
         self.rng.setstate((version, tuple(internal), gauss))
         for name in self._COUNTERS:

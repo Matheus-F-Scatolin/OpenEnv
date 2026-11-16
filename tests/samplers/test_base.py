@@ -37,15 +37,15 @@ class TestCounters:
         sampler = UniformSampler(TASKS)
         sampler.update(TASKS[0], [1.0, 0.0], costs=[10, 30])
         sampler.update(TASKS[1], [1.0, 1.0], costs=[5, 5])
-        sampler.update(TASKS[2], [0.0, 0.5])
+        sampler.update(TASKS[2], [0.0, 0.5], costs=[5, 5])
         assert (sampler.groups, sampler.signal_groups, sampler.episodes) == (3, 2, 6)
-        assert sampler.cost == 50.0
+        assert sampler.cost == 60.0
         assert sampler.signal_groups_per_episode == 2 / 6
-        assert sampler.signal_groups_per_cost == 2 / 50
+        assert sampler.signal_groups_per_cost == 2 / 60
         assert sampler.zero_signal_fraction == pytest.approx(1 / 3)
 
     @pytest.mark.parametrize(
-        "rewards,costs", [([], None), ([1.0, 0.0], [1.0]), ([1.0, 0.0], [1.0, 0.0])]
+        "rewards,costs", [([], None), ([1.0, 0.0], [1.0]), ([1.0, 0.0], [1.0, -1.0])]
     )
     def test_a_rejected_update_changes_nothing(
         self, rewards: list[float], costs: list[float] | None
