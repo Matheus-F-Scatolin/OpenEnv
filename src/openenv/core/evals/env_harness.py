@@ -1,0 +1,635 @@
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""
+Evaluate a policy on an environment's tasks with the pieces of the collect pipeline.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import warnings
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import openai
+from openenv.core.evals.base import EvalHarness
+from openenv.core.evals.types import EvalResult
+from openenv.core.harness.collect import (
+    _rollout_final_state,
+    _tool_trace_to_plain,
+    EpisodeRecord,
+    RolloutSerializer,
+)
+from openenv.core.harness.rollout import (
+    _resolve_env_reward,
+    _tool_result_reward,
+    HarnessAdapter,
+    HarnessRolloutResult,
+    HarnessRunLimits,
+    ModelStep,
+    ResourceSessionFactory,
+    VerifyResult,
+)
+from websockets.exceptions import ConnectionClosed
+
+logger = logging.getLogger(__name__)
+
+ERRORS_FILENAME = "errors.jsonl"
+
+# Failures the policy's output cannot cause: a lost connection to the environment,
+# and the model endpoint's connection, timeout, authentication, routing, rate-limit
+# and server errors. Any other exception raised during a rollout is the policy's.
+_INFRA_ERRORS = (
+    ConnectionError,
+    ConnectionClosed,
+    openai.APIConnectionError,
+    openai.AuthenticationError,
+    openai.PermissionDeniedError,
+    openai.NotFoundError,
+    openai.RateLimitError,
+    openai.InternalServerError,
+)
+
+_DEFAULTS: dict[str, Any] = {
+    "limit": None,
+    "seeds": [0],
+    "samples_per_task": 1,
+    "temperature": 0.0,
+    "success_threshold": 1.0,
+    "max_turns": 9,
+    "max_tokens": 200,
+}
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_real(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _resolve_parameters(eval_parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Return the seven evaluation settings with their defaults, after checking them.
+
+    Args:
+        eval_parameters (`Mapping[str, Any]`):
+            The caller's parameters. Keys other than the seven are ignored.
+
+    Returns:
+        `dict[str, Any]`: `limit`, `seeds`, `samples_per_task`, `temperature`,
+        `success_threshold`, `max_turns` and `max_tokens`.
+
+    Raises:
+        `ValueError`: If a value has the wrong type or range; the message names the key.
+    """
+    p = {key: eval_parameters.get(key, default) for key, default in _DEFAULTS.items()}
+    if p["limit"] is not None and not (_is_int(p["limit"]) and p["limit"] >= 1):
+        raise ValueError(f"limit must be None or an int >= 1, got {p['limit']!r}")
+    seeds = p["seeds"]
+    if (
+        not isinstance(seeds, (list, tuple))
+        or not seeds
+        or not all(_is_int(seed) for seed in seeds)
+        or len(set(seeds)) != len(seeds)
+    ):
+        raise ValueError(
+            f"seeds must be a non-empty list of distinct ints, got {seeds!r}"
+        )
+    for key in ("samples_per_task", "max_turns", "max_tokens"):
+        if not (_is_int(p[key]) and p[key] >= 1):
+            raise ValueError(f"{key} must be an int >= 1, got {p[key]!r}")
+    if not (_is_real(p["temperature"]) and p["temperature"] >= 0):
+        raise ValueError(f"temperature must be a number >= 0, got {p['temperature']!r}")
+    if p["samples_per_task"] > 1 and p["temperature"] == 0:
+        raise ValueError("temperature must be > 0 when samples_per_task > 1")
+    if not _is_real(p["success_threshold"]):
+        raise ValueError(
+            f"success_threshold must be a finite number, got {p['success_threshold']!r}"
+        )
+    return {
+        **p,
+        "seeds": list(seeds),
+        "temperature": float(p["temperature"]),
+        "success_threshold": float(p["success_threshold"]),
+    }
+
+
+@dataclass
+class _Episode:
+    """One evaluated episode, as the harness classified it."""
+
+    task: Mapping[str, Any]
+    seed: int
+    sample: int
+    outcome: str
+    reward: float | None = None
+    rollout: HarnessRolloutResult | None = None
+    verify: VerifyResult | None = None
+    finished: bool = False
+    error: str | None = None
+    turns: int | None = field(init=False, default=None)
+    tokens: int | None = field(init=False, default=None)
+
+    def __post_init__(self) -> None:
+        if self.finished and self.rollout is not None:
+            self.turns = self.rollout.metrics.get("turns")
+            self.tokens = len(self.rollout.completion_ids) or None
+
+    def to_record(self, episode_id: str) -> EpisodeRecord:
+        rollout, verify = self.rollout, self.verify
+        extra: dict[str, Any] = {
+            "outcome": self.outcome,
+            "seed": self.seed,
+            "sample": self.sample,
+            "completion_tokens": self.tokens,
+        }
+        if self.error is not None:
+            extra["error"] = self.error
+        return EpisodeRecord(
+            episode_id=episode_id,
+            messages=[dict(m) for m in rollout.messages] if rollout else [],
+            reward=self.reward,  # None unless scored
+            done=bool(rollout and verify and (rollout.done or verify.done)),
+            tool_trace=_tool_trace_to_plain(rollout) if rollout else [],
+            metrics=dict(rollout.metrics) if rollout else {},
+            verify_metrics=dict(verify.metrics) if verify else {},
+            artifacts=dict(verify.artifacts) if verify else {},
+            task=self.task,
+            extra=extra,
+        )
+
+
+def _mean(values: list[Any]) -> float | None:
+    """Mean of `values`, or None when there is none or any of them is None."""
+    if not values or any(value is None for value in values):
+        return None
+    return sum(values) / len(values)
+
+
+def _success_rate(episodes: list[_Episode], threshold: float) -> float | None:
+    kept = [e for e in episodes if e.outcome in ("scored", "policy_error")]
+    if not kept:
+        return None
+    return sum(_solved(e, threshold) for e in kept) / len(kept)
+
+
+def _solved(episode: _Episode, threshold: float) -> bool:
+    return episode.outcome == "scored" and episode.reward >= threshold
+
+
+class EnvEvalHarness(EvalHarness):
+    """
+    Evaluate a policy on a list of an environment's tasks, one episode at a time.
+
+    Each episode goes through the pieces `openenv collect` uses: the session
+    factory starts it with its task and seed, the harness adapter runs it with the
+    model step, and `session.verify` closes it. The harness walks the tasks, each
+    task with every seed, and each seed `samples_per_task` times, in the order a
+    `SequentialSampler` gives, then aggregates the rewards the environment
+    returned. It never computes, rounds or fills in a reward.
+
+    Each episode gets one outcome:
+
+    - `scored`: the environment ended the episode with a reward;
+    - `unscored`: the environment ended it with a reward of None, a failure of its own;
+    - `policy_error`: the harness ended it because of the policy, whatever reward an
+      earlier step returned: a reply without a tool call, the turn limit, or an
+      exception the policy's output can cause or whose cause is unclear (a tool call
+      that cannot be parsed or names no tool, a request past the context length);
+    - `infra_error`: a failure the policy cannot cause: the session could not be
+      created, the connection to the environment was lost, the model endpoint could
+      not be reached or answered with an authentication, rate-limit or server error,
+      or `verify` forwarded a reward that differs from the environment's.
+
+    `unscored` and `infra_error` episodes are left out of `success_rate`,
+    `mean_reward` and `pass@k`, and reported apart. A `policy_error` counts as not
+    solved, so a policy cannot raise its score by failing to answer.
+
+    `run` reads seven keys of `eval_parameters` and ignores the others, such as
+    `model` and `llm_endpoint`, which stay in the result's config as a record:
+
+    | Key | Default | Meaning |
+    |-----|---------|---------|
+    | `limit` | `None` | Evaluate only the first `limit` tasks. |
+    | `seeds` | `[0]` | Seeds crossed with each task. |
+    | `samples_per_task` | `1` | Episodes per task and seed, for `pass@k`. |
+    | `temperature` | `0.0` | Passed to the model step; must be > 0 when `samples_per_task > 1`. |
+    | `success_threshold` | `1.0` | Reward at or above which an episode is solved. |
+    | `max_turns` | `9` | The harness's turn limit. |
+    | `max_tokens` | `200` | Passed to the model step. |
+
+    With `output_dir`, each call to `run` writes a new folder `run-0000`,
+    `run-0001`, ... inside it: `results.jsonl` with the scored episodes, written by
+    [`~openenv.core.harness.collect.RolloutSerializer`], `errors.jsonl` with every
+    other episode (reward None), each record with `outcome`, `seed`, `sample`,
+    `completion_tokens` and, for an exception, `error` in its `extra`, and last
+    `metadata.json`. A run folder that already exists is never written into.
+
+    Before the episodes, `run` checks that two resets of the first task with the
+    first seed give the same initial messages, and that the second task gives
+    different ones. A failed check warns and sets `reproducible` to False.
+
+    Args:
+        session_factory ([`~openenv.core.harness.ResourceSessionFactory`]):
+            Creates one session per episode from a task spec and a seed.
+        harness_adapter ([`~openenv.core.harness.HarnessAdapter`]):
+            Runs each episode with `run_white_box`.
+        tasks (`Iterable[Mapping[str, Any]]`):
+            The task specs to evaluate, in order. Each needs a unique string `id`;
+            `difficulty` and `group`, when present, give the breakdowns.
+        model_step ([`~openenv.core.harness.ModelStep`]):
+            The policy, as `CollectRunner.run` takes it, for example
+            `build_model_step(OpenAIClient(...))` for an OpenAI-compatible endpoint.
+            It receives `temperature` and `max_tokens` in its `sampling` argument;
+            `mean_completion_tokens` needs it to return `completion_ids`.
+        output_dir (`str` or `Path`, *optional*):
+            Where the run folders go. Nothing is written without it.
+
+    Raises:
+        `ValueError`: If `tasks` is empty, or a task is not a mapping with a
+            string `id`, or two tasks share an `id`.
+
+    Examples:
+
+    ```python
+    harness = EnvEvalHarness(
+        session_factory,
+        MCPHarnessAdapter(),
+        client.get_task_range("test"),
+        model_step=build_model_step(OpenAIClient(POLICY_URL, None, model="policy")),
+    )
+    result = harness.run_from_config(config)
+    result.scores["success_rate"], result.scores["error_rate"]
+    ```
+    """
+
+    def __init__(
+        self,
+        session_factory: ResourceSessionFactory,
+        harness_adapter: HarnessAdapter,
+        tasks: Iterable[Mapping[str, Any]],
+        *,
+        model_step: ModelStep,
+        output_dir: str | Path | None = None,
+    ) -> None:
+        tasks = list(tasks)
+        if not tasks:
+            raise ValueError("tasks is empty")
+        seen: set[str] = set()
+        for position, task in enumerate(tasks):
+            if not isinstance(task, Mapping) or not isinstance(task.get("id"), str):
+                raise ValueError(
+                    f"task at position {position} is not a mapping with a string 'id'"
+                )
+            if task["id"] in seen:
+                raise ValueError(f"task id {task['id']!r} appears more than once")
+            seen.add(task["id"])
+        self._session_factory = session_factory
+        self._harness_adapter = harness_adapter
+        self._tasks = tasks
+        self._model_step = model_step
+        self._output_dir = Path(output_dir) if output_dir is not None else None
+        self._runs = 0
+
+    def run(
+        self,
+        harness_version: str,
+        library_versions: dict[str, str],
+        dataset: str,
+        eval_parameters: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Evaluate the policy and return its scores.
+
+        Args:
+            harness_version (`str`):
+                Recorded in `metadata.json`.
+            library_versions (`dict[str, str]`):
+                Recorded in `metadata.json`.
+            dataset (`str`):
+                Recorded in `metadata.json`.
+            eval_parameters (`dict[str, Any]`):
+                The settings of the class's table; other keys are ignored.
+
+        Returns:
+            `dict[str, Any]`, JSON-safe, with keys:
+                - `num_tasks`, `num_episodes` (`int`): tasks after `limit`, and episodes.
+                - `success_rate` (`float` or `None`): solved over scored and
+                  `policy_error` episodes; `success_rate_stderr`, its binomial
+                  standard error, which treats episodes as independent.
+                - `mean_reward` (`float` or `None`): over scored episodes only, so
+                  read it with `error_rate`.
+                - `mean_turns`, `mean_completion_tokens` (`float` or `None`): over
+                  the episodes whose rollout finished; None if one lacks the count.
+                - `pass@k`, `pass@k_num_tasks` for each `k` up to
+                  `samples_per_task`: the unbiased estimator, averaged over the
+                  tasks with at least `k` scored or `policy_error` episodes, and
+                  how many tasks that is.
+                - `error_rate`, `unscored_rate`, `infra_error_rate` (`float`): shares
+                  of all episodes.
+                - `by_difficulty`, `by_group` (`dict[str, float | None]`): success
+                  rate per value of that task key.
+                - `per_task` (`dict[str, str]`): `solved` when every scored or
+                  `policy_error` episode of the task is solved, `left_out` when it
+                  has none, else `not_solved`.
+                - `reproducible` (`bool`): whether both reset checks passed.
+
+        Raises:
+            `ValueError`: If a setting is invalid; nothing has been run or written.
+            `FileExistsError`: If the next run folder already exists.
+        """
+        params = _resolve_parameters(eval_parameters)
+        tasks = self._tasks[: params["limit"]]
+        run_dir = None
+        if self._output_dir is not None:
+            run_dir = self._output_dir / f"run-{self._runs:04d}"
+            if run_dir.exists():
+                raise FileExistsError(f"{run_dir} already exists")
+        reproducible = self._check_reproducible(tasks, params["seeds"][0])
+        if run_dir is not None:
+            run_dir.mkdir(parents=True)
+            self._runs += 1
+
+        limits = HarnessRunLimits(
+            max_turns=params["max_turns"],
+            sampling={
+                "temperature": params["temperature"],
+                "max_tokens": params["max_tokens"],
+            },
+        )
+        episodes: list[_Episode] = []
+        for task in tasks:
+            for seed in params["seeds"]:
+                for sample in range(params["samples_per_task"]):
+                    episode_id = f"ep-{len(episodes):06d}"
+                    episode = self._run_episode(task, seed, sample, episode_id, limits)
+                    if episode.error is not None:
+                        logger.warning(
+                            "%s %s: %s", episode_id, episode.outcome, episode.error
+                        )
+                    if run_dir is not None:
+                        self._write(run_dir, episode.to_record(episode_id))
+                    episodes.append(episode)
+
+        scores = self._scores(tasks, episodes, params)
+        scores["reproducible"] = reproducible
+        if run_dir is not None:
+            RolloutSerializer(run_dir).write_metadata(
+                {
+                    "harness": self.name,
+                    "harness_version": harness_version,
+                    "library_versions": dict(library_versions),
+                    "dataset": dataset,
+                    "eval_parameters": {**eval_parameters, **params},
+                    "num_tasks": len(tasks),
+                    "num_episodes": len(episodes),
+                    "reproducible": reproducible,
+                }
+            )
+        return scores
+
+    def _run_episode(
+        self,
+        task: Mapping[str, Any],
+        seed: int,
+        sample: int,
+        episode_id: str,
+        limits: HarnessRunLimits,
+    ) -> _Episode:
+        """Run one episode and classify it by who ended it (see the class docstring)."""
+        try:
+            session = self._session_factory.create(
+                task, seed=seed, episode_id=episode_id
+            )
+        except Exception as exc:
+            return _Episode(task, seed, sample, "infra_error", error=_describe(exc))
+        try:
+            rollout = None
+            try:
+                rollout = self._harness_adapter.run_white_box(
+                    model_step=self._model_step, session=session, limits=limits
+                )
+                verify = session.verify(
+                    transcript=rollout.messages,
+                    final_state=_rollout_final_state(rollout),
+                )
+            except Exception as exc:
+                outcome = (
+                    "infra_error" if isinstance(exc, _INFRA_ERRORS) else "policy_error"
+                )
+                return _Episode(
+                    task, seed, sample, outcome, rollout=rollout, error=_describe(exc)
+                )
+        finally:
+            session.close()
+
+        finished = {"rollout": rollout, "verify": verify, "finished": True}
+        trace = rollout.tool_trace
+        if not trace or not trace[-1].result.done:
+            return _Episode(task, seed, sample, "policy_error", **finished)
+        if _tool_result_reward(trace[-1].result) is None:
+            reward = None if verify.env_reward is None else float(verify.env_reward)
+        else:
+            try:
+                reward = _resolve_env_reward(rollout, verify)
+            except ValueError as exc:
+                return _Episode(
+                    task, seed, sample, "infra_error", error=_describe(exc), **finished
+                )
+        outcome = "unscored" if reward is None else "scored"
+        return _Episode(task, seed, sample, outcome, reward=reward, **finished)
+
+    def _check_reproducible(self, tasks: list[Mapping[str, Any]], seed: int) -> bool:
+        """Reset the first task twice and the second once; warn on a failed check."""
+        first = self._initial_messages(tasks[0], seed)
+        reproducible = True
+        if self._initial_messages(tasks[0], seed) != first:
+            warnings.warn(
+                "Two resets of the same task and seed gave different initial "
+                "messages; scores may not be comparable across checkpoints.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            reproducible = False
+        if len(tasks) > 1 and self._initial_messages(tasks[1], seed) == first:
+            warnings.warn(
+                "Resets of two different tasks gave the same initial messages; the "
+                "environment may ignore the task it is given.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            reproducible = False
+        return reproducible
+
+    def _initial_messages(self, task: Mapping[str, Any], seed: int) -> str:
+        session = self._session_factory.create(task, seed=seed, episode_id=None)
+        try:
+            return json.dumps(session.initial_messages(), sort_keys=True, default=str)
+        finally:
+            session.close()
+
+    @staticmethod
+    def _write(run_dir: Path, record: EpisodeRecord) -> None:
+        if record.extra["outcome"] == "scored":
+            RolloutSerializer(run_dir).write_episode(record)
+            return
+        with (run_dir / ERRORS_FILENAME).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record.to_dict(), default=str) + "\n")
+
+    @staticmethod
+    def _scores(
+        tasks: list[Mapping[str, Any]],
+        episodes: list[_Episode],
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        threshold = params["success_threshold"]
+        by_task: dict[str, list[_Episode]] = {task["id"]: [] for task in tasks}
+        for episode in episodes:
+            if episode.outcome in ("scored", "policy_error"):
+                by_task[episode.task["id"]].append(episode)
+
+        success_rate = _success_rate(episodes, threshold)
+        num_kept = sum(len(kept) for kept in by_task.values())
+        finished = [e for e in episodes if e.finished]
+        scores: dict[str, Any] = {
+            "num_tasks": len(tasks),
+            "num_episodes": len(episodes),
+            "success_rate": success_rate,
+            "success_rate_stderr": None
+            if success_rate is None
+            else math.sqrt(success_rate * (1 - success_rate) / num_kept),
+            "mean_reward": _mean([e.reward for e in episodes if e.outcome == "scored"]),
+            "mean_turns": _mean([e.turns for e in finished]),
+            "mean_completion_tokens": _mean([e.tokens for e in finished]),
+        }
+        counts = [
+            (len(kept), sum(_solved(e, threshold) for e in kept))
+            for kept in by_task.values()
+        ]
+        for k in range(1, params["samples_per_task"] + 1):
+            estimates = [
+                1 - math.comb(n - solved, k) / math.comb(n, k)
+                for n, solved in counts
+                if n >= k
+            ]
+            scores[f"pass@{k}"] = _mean(estimates)
+            scores[f"pass@{k}_num_tasks"] = len(estimates)
+        for outcome, key in (
+            ("policy_error", "error_rate"),
+            ("unscored", "unscored_rate"),
+            ("infra_error", "infra_error_rate"),
+        ):
+            scores[key] = sum(e.outcome == outcome for e in episodes) / len(episodes)
+        for key, name in (("difficulty", "by_difficulty"), ("group", "by_group")):
+            buckets: dict[str, list[_Episode]] = {}
+            for task in tasks:
+                if key in task:
+                    buckets.setdefault(str(task[key]), [])
+            for episode in episodes:
+                if key in episode.task:
+                    buckets[str(episode.task[key])].append(episode)
+            scores[name] = {
+                value: _success_rate(members, threshold)
+                for value, members in buckets.items()
+            }
+        per_task = {}
+        for task_id, kept in by_task.items():
+            if not kept:
+                per_task[task_id] = "left_out"
+            elif all(_solved(e, threshold) for e in kept):
+                per_task[task_id] = "solved"
+            else:
+                per_task[task_id] = "not_solved"
+        scores["per_task"] = per_task
+        return scores
+
+
+def _describe(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+@dataclass(frozen=True)
+class EvalComparison:
+    """
+    The tasks whose outcome changed between two evaluations.
+
+    Attributes:
+        fixed (`list[str]`):
+            Task ids not solved before and solved after.
+        regressed (`list[str]`):
+            Task ids solved before and not solved after.
+        left_out (`list[str]`):
+            Task ids left out of either evaluation, or present in only one of them;
+            they are in neither list above.
+    """
+
+    fixed: list[str]
+    regressed: list[str]
+    left_out: list[str]
+
+
+def compare_eval_results(before: EvalResult, after: EvalResult) -> EvalComparison:
+    """
+    Compare two evaluations of the same tasks, task by task.
+
+    Both results should come from [`EnvEvalHarness`] with the same tasks and
+    parameters; their configs are not compared. Task ids are listed in the order of
+    `before`, then the ids found only in `after`.
+
+    Args:
+        before (`EvalResult`):
+            The earlier evaluation, for example of the previous checkpoint.
+        after (`EvalResult`):
+            The later evaluation.
+
+    Returns:
+        [`EvalComparison`]: The fixed, regressed and left-out task ids.
+
+    Raises:
+        `ValueError`: If either result has no `per_task` scores.
+
+    Examples:
+
+    ```python
+    diff = compare_eval_results(step0, step1000)
+    diff.fixed, diff.regressed, diff.left_out
+    ```
+    """
+    tables = {}
+    for side, result in (("before", before), ("after", after)):
+        per_task = result.scores.get("per_task")
+        if not isinstance(per_task, dict):
+            raise ValueError(f"{side} has no per_task scores")
+        tables[side] = per_task
+    old, new = tables["before"], tables["after"]
+    fixed: list[str] = []
+    regressed: list[str] = []
+    left_out: list[str] = []
+    for task_id in [*old, *(task_id for task_id in new if task_id not in old)]:
+        was = old.get(task_id, "left_out")
+        now = new.get(task_id, "left_out")
+        if "left_out" in (was, now):
+            left_out.append(task_id)
+        elif was == "not_solved" and now == "solved":
+            fixed.append(task_id)
+        elif was == "solved" and now == "not_solved":
+            regressed.append(task_id)
+    return EvalComparison(fixed=fixed, regressed=regressed, left_out=left_out)
+
+
+__all__ = [
+    "compare_eval_results",
+    "EnvEvalHarness",
+    "ERRORS_FILENAME",
+    "EvalComparison",
+]
