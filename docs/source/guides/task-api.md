@@ -11,6 +11,8 @@ The Task API has two halves:
 - **Server side**: your environment optionally implements five methods — `list_splits()`, `list_tasks()`, `num_tasks()`, `get_task()`, `get_task_range()`. These are described by the `TaskProvider` protocol.
 - **HTTP side**: when those methods exist, the environment server automatically exposes them as routes under `/{env_name}/…`. You do not register anything.
 
+On the client side, `TaskAPIClient` calls those routes for any environment (see [Consuming the Task API](#consuming-the-task-api)).
+
 Task discovery is **metadata only**. It never starts an episode. Selecting a task happens the usual way, through `reset()`:
 
 ```python
@@ -56,6 +58,28 @@ A "task spec" is deliberately untyped (`Any`). Return whatever your environment 
 
 1. **Task methods must be side-effect-free.** They are discovery, not control. They must not mutate episode state, consume a stream, or advance a cursor.
 2. **They must work on a freshly constructed environment.** Each task route builds a short-lived environment instance, calls the one method, and closes it again. Nothing you set up in `reset()` is available, so read configuration in `__init__` (or lazily inside the method) rather than relying on episode state.
+
+## Task Spec Keys
+
+Task specs stay untyped, but a few keys mean the same thing in every environment, so that code which works across environments, such as a task sampler or an evaluation loop, can read them without knowing the environment. All of them are optional: an environment that publishes none of them keeps working, and the checklist below does not ask for them.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `id` | `str` | Stable identifier of the task. |
+| `split` | `str` | Name of the split the task belongs to. |
+| `index` | `int` | Position of the task in its split: the value `reset(index=...)` takes. |
+| `difficulty` | `int` or `float` | Higher means harder: levels `0` to `K`, or a continuous score. |
+| `group` | `str` | A family of related tasks, for example the dataset a task comes from. |
+
+`id`, `split` and `index` are what the examples in this guide already return. Do not give these names another meaning: a `difficulty` that holds a label such as `"hard"` cannot be compared, and an `index` that is not the task's position selects the wrong task.
+
+### Difficulty levels
+
+If your tasks come in levels of difficulty, publish the level as `difficulty` and keep neighbouring levels close. Group-based methods such as GRPO learn nothing from a group whose answers all get the same reward, since every advantage in it is zero, so a curriculum gains most from a level the policy solves about half of the time. When one level is already solved most of the time and the next is still rarely solved, no level lies in between, and a curriculum has no level to concentrate on. Prefer more levels with small steps in difficulty over a few large ones.
+
+### Train and test overlap
+
+Different seeds or indices for train and test do not make their questions different. A generator that can produce fewer distinct questions than a split draws from it repeats them: when a level has a few dozen possible questions and the train split draws thousands, every test question of that level also appears in train. Count the distinct questions each level can produce, and take no test questions from a level that cannot fill its train tasks without repeats, or report that level apart.
 
 ## HTTP Routes
 
@@ -217,48 +241,33 @@ Report the true count from `num_tasks()` even when `list_tasks()` is truncated. 
 
 ## Consuming the Task API
 
-The core clients (`EnvClient`, `SyncEnvClient`) do not ship Task API methods, because task specs are environment-specific. Environment clients add thin HTTP helpers alongside the inherited Gym-style `reset()`/`step()`:
+The core clients (`EnvClient`, `SyncEnvClient`) do not ship Task API methods, because task specs are environment-specific. `TaskAPIClient`, a separate class, calls these routes for any environment and returns the specs untyped. Give it the server's URL, `http(s)://` or the `ws(s)://` URL an environment client uses, and the `env_name`:
 
 ```python
-import requests
+from openenv.core import TaskAPIClient
 
-ENV_NAME = "latex_ocr_env"
-
-
-class LatexOCREnv(EnvClient[LatexOCRAction, LatexOCRObservation, State]):
-    def _task_url(self, path: str) -> str:
-        # `base_url` may be ws(s)://, and the Task API is plain HTTP.
-        base = self.base_url.replace("ws://", "http://", 1).replace("wss://", "https://", 1)
-        return f"{base}/{ENV_NAME}/{path}"
-
-    def list_splits(self) -> list[str]:
-        resp = requests.get(self._task_url("splits"), timeout=30)
-        resp.raise_for_status()
-        return [s["name"] for s in resp.json()]
-
-    def num_tasks(self, split: str) -> int:
-        resp = requests.post(
-            self._task_url("num_tasks"),
-            json={"split": split},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return int(resp.json()["num_tasks"])
+tasks = TaskAPIClient("http://localhost:8000", env_name="latex_ocr_env")
+tasks.list_splits()                  # [{"name": "train", "type": "train"}, ...]
+tasks.num_tasks("test")              # 7595
+tasks.get_task("test", 12)           # {"id": "test-12", "index": 12, "split": "test"}
+tasks.get_task_range("test", 0, 32)  # the first 32 task specs
 ```
 
-Note that the Task API is served over HTTP while episodes typically run over the WebSocket `/ws` session. A client that was constructed from a `ws://` URL has to derive the HTTP base URL before calling these routes.
+It returns task specs as the routes serve them, and turns the error statuses back into exceptions: `501` raises `NotImplementedError`, `400` raises `IndexError`, and any other error status raises `httpx.HTTPStatusError`. `iter_tasks()` reads a whole split in pages of `get_task_range()` up to `num_tasks()`, each page starting where the last one ended, so it returns every task even when `list_tasks()` returns a preview or `get_task_range()` caps its pages. `headers` are sent with every request, for example `{"Authorization": f"Bearer {hf_token}"}` for a private Hugging Face Space.
 
-From a training or evaluation loop, discovery and episode control then compose naturally:
+The Task API is served over HTTP while episodes typically run over the WebSocket `/ws` session. `TaskAPIClient.from_env_client(env)` builds a client for the server an environment client talks to: it derives the HTTP URL from the client's `ws(s)://` one, sends the same headers, and asks `/list_environments` for the name. From a training or evaluation loop, with `LatexOCREnv` the environment's `EnvClient` subclass, discovery and episode control then compose naturally:
 
 ```python
 with LatexOCREnv.from_docker_image("latex-ocr-env:latest").sync() as env:
-    total = env.num_tasks("test")
-    for index in range(total):
-        result = env.reset(split="test", index=index)
+    tasks = TaskAPIClient.from_env_client(env)
+    for task in tasks.iter_tasks("test"):
+        result = env.reset(split="test", index=task["index"])
         prediction = model(result.observation.image_base64)
         result = env.step(LatexOCRAction(latex=prediction))
-        print(index, result.reward)
+        print(task["id"], result.reward)
 ```
+
+Task specs stay environment-specific, so an environment client can still add typed helpers of its own, as `HarborEnv.get_task` does by returning a `HarborTaskRef`.
 
 Or with `curl`, against a locally running server:
 
