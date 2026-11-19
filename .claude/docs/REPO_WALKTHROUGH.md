@@ -35,6 +35,7 @@ src/
 │   │   ├── env_client.py         # EnvClient base class (WebSocket client)
 │   │   ├── client_types.py       # Client-side type definitions
 │   │   ├── utils.py              # Shared utilities
+│   │   ├── task_sampler.py       # TaskSampler protocol and the samplers that implement it
 │   │   │
 │   │   ├── harness/              # Agent protocols and captured trace collection
 │   │   │   └── capture/              # Dialect adapters, session routing, exact tokens, SSE replay
