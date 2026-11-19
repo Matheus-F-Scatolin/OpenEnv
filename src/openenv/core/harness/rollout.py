@@ -613,6 +613,7 @@ class MCPHarnessAdapter(HarnessAdapter):
         tools = session.list_tools()
         result = HarnessRolloutResult(messages=list(messages))
         total_tool_calls = 0
+        reported_tokens: list[int | None] = []
 
         for turn_index in range(run_limits.max_turns):
             step_result = model_step(messages, tools, dict(run_limits.sampling))
@@ -622,6 +623,14 @@ class MCPHarnessAdapter(HarnessAdapter):
             result.prompt_ids.extend(step_result.prompt_ids)
             result.completion_ids.extend(step_result.completion_ids)
             result.logprobs.extend(step_result.logprobs)
+            # The provider's count of generated tokens, kept current after every
+            # turn so that every return carries it. A turn without a count makes
+            # the episode's count unknown, not smaller.
+            reported_tokens.append(step_result.response.completion_tokens)
+            if None in reported_tokens:
+                result.metrics.pop("completion_tokens", None)
+            else:
+                result.metrics["completion_tokens"] = sum(reported_tokens)
             result.events.append(
                 RolloutEvent(
                     type="model_response",

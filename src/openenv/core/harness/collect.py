@@ -76,6 +76,10 @@ class EpisodeRecord:
     artifacts: dict[str, Any]
     task: Any = None
     extra: dict[str, Any] = field(default_factory=dict)
+    # The ids the model generated, when the model step returns them. The episode's
+    # generated token count is their length, else `metrics["completion_tokens"]`
+    # (the provider's count), else unknown. Never re-tokenize `messages`.
+    completion_ids: list[int] = field(default_factory=list)
 
     @classmethod
     def from_rollout(
@@ -104,6 +108,7 @@ class EpisodeRecord:
             artifacts=dict(verify.artifacts),
             task=task,
             extra=dict(extra or {}),
+            completion_ids=list(rollout.completion_ids),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -546,6 +551,8 @@ def build_dataset_readme(output_dir: Path) -> str:
             "- `tool_trace` (list of `{tool_name, arguments, result}`)",
             "- `metrics`, `verify_metrics`, `artifacts`",
             "- `task`, `extra` (optional call-site annotations)",
+            "- `completion_ids` (generated token ids, when the model step returns "
+            "them)",
             "",
             "## Load",
             "",

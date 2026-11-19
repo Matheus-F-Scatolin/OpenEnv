@@ -85,6 +85,46 @@ class RecordingSessionFactory:
         return self.session
 
 
+def _work_then_finish_session() -> StepEnvSessionAdapter:
+    """A session whose `work` tool keeps the episode open and `finish` ends it."""
+    return StepEnvSessionAdapter(
+        client=FakeSyncEnv(),
+        task="token-task",
+        tool_specs=[
+            Tool(
+                name=name,
+                description=name,
+                input_schema={"type": "object", "properties": {}},
+            )
+            for name in ("work", "finish")
+        ],
+        action_builder=lambda name, arguments: name,
+        initial_messages_builder=lambda result, task: [
+            {"role": "user", "content": "Solve the task"}
+        ],
+    )
+
+
+def _scripted_model_step(turns: list[tuple[list[str], int | None]]):
+    """A model step that calls the given tools and reports the given count, per turn."""
+    replies = iter(turns)
+
+    def model_step(messages, tools, sampling):
+        names, completion_tokens = next(replies)
+        return ModelStepResult(
+            response=LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(id=f"call-{i}", name=name, args={})
+                    for i, name in enumerate(names)
+                ],
+                completion_tokens=completion_tokens,
+            )
+        )
+
+    return model_step
+
+
 class TestStepEnvSessionAdapter:
     """Tests for the generic step-based resource session adapter."""
 
@@ -443,6 +483,36 @@ class TestMCPHarnessAdapter:
         )
 
         assert session.verified is False
+
+    def test_run_white_box_sums_reported_completion_tokens(self):
+        result = MCPHarnessAdapter().run_white_box(
+            model_step=_scripted_model_step([(["work"], 5), (["finish"], 7)]),
+            session=_work_then_finish_session(),
+            limits=HarnessRunLimits(max_turns=3),
+        )
+
+        assert result.tool_trace[-1].result.done is True
+        assert result.metrics["completion_tokens"] == 12
+
+    def test_run_white_box_leaves_out_the_count_when_a_turn_has_none(self):
+        result = MCPHarnessAdapter().run_white_box(
+            model_step=_scripted_model_step([(["work"], None), (["finish"], 7)]),
+            session=_work_then_finish_session(),
+            limits=HarnessRunLimits(max_turns=3),
+        )
+
+        assert result.tool_trace[-1].result.done is True
+        assert "completion_tokens" not in result.metrics
+
+    def test_truncated_rollout_keeps_completion_tokens(self):
+        result = MCPHarnessAdapter().run_white_box(
+            model_step=_scripted_model_step([(["work", "work"], 6)]),
+            session=_work_then_finish_session(),
+            limits=HarnessRunLimits(max_turns=3, max_total_tool_calls=1),
+        )
+
+        assert result.metrics["truncated"] is True
+        assert result.metrics["completion_tokens"] == 6
 
 
 class TestBuildHarnessRolloutFunc:

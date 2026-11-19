@@ -113,10 +113,22 @@ class ToolCall:
 
 @dataclass
 class LLMResponse:
-    """Normalized response from an LLM, with optional tool calls."""
+    """
+    Normalized response from an LLM, with optional tool calls.
+
+    Attributes:
+        content (`str`):
+            The text of the reply.
+        tool_calls (`list[ToolCall]`):
+            The tool calls of the reply, empty when there are none.
+        completion_tokens (`int`, *optional*):
+            The number of tokens the model generated, as the provider reports it.
+            `None` when the provider reports no usage.
+    """
 
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    completion_tokens: int | None = None
 
     def to_message_dict(self) -> dict[str, Any]:
         """Convert to an OpenAI-format assistant message dict."""
@@ -315,7 +327,12 @@ class OpenAIClient(LLMClient):
                     )
                 )
 
-        return LLMResponse(content=msg.content or "", tool_calls=tool_calls)
+        usage = response.usage
+        return LLMResponse(
+            content=msg.content or "",
+            tool_calls=tool_calls,
+            completion_tokens=None if usage is None else usage.completion_tokens,
+        )
 
 
 class AnthropicClient(LLMClient):
@@ -416,7 +433,11 @@ class AnthropicClient(LLMClient):
                     ToolCall(id=block.id, name=block.name, args=block.input)
                 )
 
-        return LLMResponse(content=content, tool_calls=tool_calls)
+        return LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            completion_tokens=response.usage.output_tokens,
+        )
 
 
 # ---------------------------------------------------------------------------

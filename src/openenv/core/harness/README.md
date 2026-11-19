@@ -85,11 +85,16 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `reward` | float | Env reward (derived via `_resolve_env_reward`, never synthesized) |
 | `done` | bool | Whether the episode terminated |
 | `tool_trace` | list | Structured tool calls with args & results |
-| `metrics` | struct | Harness-level metrics (turns, tool_calls) |
+| `metrics` | struct | Harness-level metrics (turns, tool_calls; `completion_tokens` when the provider reported a count for every turn) |
 | `verify_metrics` | struct | Session-level metrics (step_count, …) |
 | `artifacts` | struct | Verification artifacts (final state, etc.) |
 | `task` | any | Optional task spec passed by `CollectRunner.tasks` |
 | `extra` | struct | Free-form annotations supplied by the caller |
+| `completion_ids` | list | Token ids the model generated, when the model step returns them (empty otherwise) |
+
+The generated token count of an episode is `len(completion_ids)` when it is not
+empty, else `metrics.completion_tokens`, else unknown. It is never recomputed by
+tokenizing `messages`.
 
 `metadata.json` — run-level info (env, model, n, temperature, filter flags).
 
