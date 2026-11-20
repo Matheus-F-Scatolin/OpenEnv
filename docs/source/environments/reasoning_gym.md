@@ -293,6 +293,25 @@ with ThreadPoolExecutor(max_workers=4) as executor:
         print(f"Client {client_id}: Total score = {score}")
 ```
 
+### Models That Answer in Text
+
+`reasoning_gym_env.harness.ReasoningGymSessionFactory` gives harness rollouts one tool, `answer`, and the environment scores only that call, so a model that replies in plain text ends the episode without a score. Wrap its model step with `text_answer_model_step` to submit such a reply as the answer: the content of its last `<answer>...</answer>` block, or the whole reply when there is none. The environment scores it as usual; a reply that already calls a tool is left unchanged.
+
+```python
+from openenv.core.harness.collect import build_model_step
+from openenv.core.llm_client import OpenAIClient
+from reasoning_gym_env.harness import text_answer_model_step
+
+model_step = text_answer_model_step(
+    build_model_step(
+        OpenAIClient("http://localhost:8080/v1", None, model="my-model"),
+        system_prompt="Give your final answer as <answer>...</answer>.",
+    )
+)
+```
+
+Use it to evaluate a model, not to collect fine-tuning data: the transcript then holds a tool call that the model did not write.
+
 ## Development & Testing
 
 ### Direct Environment Testing
