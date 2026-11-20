@@ -12,7 +12,12 @@ from typing import Annotated
 
 import typer
 from openenv import __version__
-from openenv.core.evals import EnvEvalHarness, EvalConfig
+from openenv.core.evals import (
+    compare_eval_results,
+    EnvEvalHarness,
+    EvalConfig,
+    EvalResult,
+)
 from openenv.core.harness import MCPHarnessAdapter
 from openenv.core.task_api_client import TaskAPIClient
 
@@ -102,6 +107,16 @@ def evaluate(
             help="System prompt for the model (default: the one of openenv collect).",
         ),
     ] = None,
+    compare: Annotated[
+        Path | None,
+        typer.Option(
+            "--compare",
+            exists=True,
+            dir_okay=False,
+            help="An earlier result.json: print the tasks fixed, regressed and "
+            "left out since then.",
+        ),
+    ] = None,
 ) -> None:
     """
     Evaluate a model on a split of an environment's tasks.
@@ -109,13 +124,28 @@ def evaluate(
     The tasks come from the environment's Task API, and each episode runs through
     the collect pipeline with [`~openenv.core.evals.EnvEvalHarness`]. The episodes
     go to `run-0000/` in `--output-dir`, and the scores, with the whole
-    configuration, to `result.json` beside it.
+    configuration, to `result.json` beside it. With `--compare`, the tasks whose
+    outcome changed since an earlier result are printed, as
+    [`~openenv.core.evals.compare_eval_results`] lists them.
     """
     if output_dir.exists() and any(output_dir.iterdir()):
         raise typer.BadParameter(
             f"{output_dir} is not empty; use a new directory.",
             param_hint="--output-dir",
         )
+    before = None
+    if compare is not None:
+        try:
+            before = EvalResult.model_validate_json(compare.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"{compare} is not a result of openenv eval.", param_hint="--compare"
+            ) from exc
+        # Checked here so that a wrong file fails before the evaluation runs.
+        if not isinstance(before.scores.get("per_task"), dict):
+            raise typer.BadParameter(
+                f"{compare} has no per_task scores.", param_hint="--compare"
+            )
     factory = _build_session_factory(env, base_url)
     system_prompt = system_prompt or _SYSTEM_PROMPT
     model_step = _build_llm_model_step(
@@ -181,3 +211,12 @@ def evaluate(
         if not isinstance(value, (dict, list)):
             console.print(f"{key}={value}")
     console.print(f"[green]Result:[/green] {path}")
+
+    if before is not None:
+        diff = compare_eval_results(before, result)
+        for name, ids in (
+            ("fixed", diff.fixed),
+            ("regressed", diff.regressed),
+            ("left_out", diff.left_out),
+        ):
+            console.print(f"{name} ({len(ids)}): {', '.join(ids) or '-'}", markup=False)

@@ -480,6 +480,18 @@ openenv eval reasoning_gym:chain_sum --base-url http://localhost:8001 \
 [`~openenv.core.evals.EnvEvalHarness`]. The API key, if the endpoint needs one,
 is read from `OPENAI_API_KEY` and written nowhere.
 
+`--compare` takes an earlier `result.json` and prints, after the run, the task
+ids that were fixed (not solved before, solved now), regressed (solved before,
+not solved now) and left out of either run (every episode unscored or failed by
+infrastructure, or the task in only one run). Both runs should use the same
+split and settings; they are not compared.
+
+```bash
+openenv eval reasoning_gym:chain_sum --base-url http://localhost:8001 \
+    --split test --llm-endpoint http://localhost:8080/v1 --model ckpt-1000 \
+    --output-dir runs/eval-step1000 --compare runs/eval-step0000/result.json
+```
+
 [[autodoc]] openenv.cli.commands.evaluate.evaluate
 
 ## `openenv harbor`

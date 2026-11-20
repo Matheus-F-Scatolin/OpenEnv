@@ -468,6 +468,85 @@ class TestUsageErrors:
         assert llm.requests == []
 
 
+class TestCompare:
+    def test_lists_fixed_regressed_and_left_out(
+        self, tmp_path: Path, task_api, llm, factory: FakeFactory
+    ) -> None:
+        llm.answers.update({"t0": "4", "t1": "5"})
+        assert invoke(tmp_path / "before")[0].exit_code == 0
+        llm.answers.update({"t0": "5", "t1": "4"})
+        after = tmp_path / "after"
+
+        result, output = invoke(
+            after, "--compare", str(tmp_path / "before" / "result.json")
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "fixed (1): t1" in output
+        assert "regressed (1): t0" in output
+        assert "left_out (1): t2" in output
+        assert read_result(after).scores["per_task"]["t1"] == "solved"
+
+    def test_nothing_changed(
+        self, tmp_path: Path, task_api, llm, factory: FakeFactory
+    ) -> None:
+        task_api.tasks["test"] = tasks(2)
+        llm.answers.update({"t0": "4"})
+        assert invoke(tmp_path / "before")[0].exit_code == 0
+
+        result, output = invoke(
+            tmp_path / "after", "--compare", str(tmp_path / "before" / "result.json")
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "fixed (0): -" in output
+        assert "regressed (0): -" in output
+
+    @pytest.mark.parametrize(
+        ("content", "message"),
+        [
+            (None, "does not exist"),
+            ("not json", "is not a result of openenv eval"),
+            (
+                EvalResult.model_validate(
+                    {
+                        "config": {
+                            "harness_name": "InspectAIHarness",
+                            "harness_version": "1",
+                            "library_versions": {},
+                            "dataset": "d",
+                            "eval_parameters": {},
+                        },
+                        "scores": {"accuracy": 0.5},
+                    }
+                ).model_dump_json(),
+                "has no per_task scores",
+            ),
+        ],
+    )
+    def test_bad_file_is_refused_before_running(
+        self,
+        tmp_path: Path,
+        task_api,
+        llm,
+        factory: FakeFactory,
+        content: str | None,
+        message: str,
+    ) -> None:
+        earlier = tmp_path / "earlier.json"
+        if content is not None:
+            earlier.write_text(content)
+        out = tmp_path / "out"
+
+        result, output = invoke(out, "--compare", str(earlier))
+
+        assert result.exit_code == 2, result.output
+        assert "--compare" in output
+        assert message in output
+        assert task_api.requests == []
+        assert not out.exists()
+
+
 class TestRegistration:
     def test_eval_is_listed(self) -> None:
         result = runner.invoke(app, ["--help"], env={"COLUMNS": "200"})
@@ -480,5 +559,11 @@ class TestRegistration:
 
         assert result.exit_code == 0
         plain = _ANSI_ESCAPE.sub("", result.output)
-        for option in ("--split", "--llm-endpoint", "--seed", "--success-threshold"):
+        for option in (
+            "--split",
+            "--llm-endpoint",
+            "--seed",
+            "--success-threshold",
+            "--compare",
+        ):
             assert option in plain
