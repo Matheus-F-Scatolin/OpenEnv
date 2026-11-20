@@ -1044,6 +1044,15 @@ class TestMCPToolRegistration:
         assert "submit_proof" in tools
         assert "get_grading_guidelines" in tools
 
+    @pytest.mark.asyncio
+    async def test_list_tools_reports_input_schemas(self):
+        from openenv.core.env_server.mcp_types import ListToolsAction
+
+        env = _make_env()
+        obs = await env.step_async(ListToolsAction())
+        tools = {tool.name: tool for tool in obs.tools}
+        assert "proof" in tools["submit_proof"].input_schema["properties"]
+
     def test_get_problem_tool_callable_after_reset(self):
         env = _make_env()
         env.reset()
@@ -1087,6 +1096,26 @@ class TestVerifyAnswerWorker:
         response = _verify_answer_worker(request)
         assert response.status == "wrong"
 
+    @pytest.mark.parametrize(
+        ("prediction", "gold", "status"),
+        [
+            (r"\boxed{\sqrt{51}}", r"\boxed{\sqrt{51}}", "correct"),
+            (r"\boxed{1+x^2}", r"\boxed{x^2+1}", "correct"),
+            (r"\boxed{49, 50, 51}", r"\boxed{51}", "wrong"),
+            (r"\boxed{x = 7 \text{ or } x = 51}", r"\boxed{51}", "wrong"),
+        ],
+    )
+    def test_boxed_content_is_parsed_as_latex(self, prediction, gold, status):
+        """Answer-mode gold is boxed, so the prediction has to stay boxed too."""
+        request = VerifyRequest(
+            request_id="req-boxed",
+            prediction=prediction,
+            gold=gold,
+            strict=True,
+            timeout_seconds=1,
+        )
+        assert _verify_answer_worker(request).status == status
+
     def test_no_boxed_answer(self):
         request = VerifyRequest(
             request_id="req-3",
@@ -1112,14 +1141,13 @@ class TestVerifyAnswerWorker:
     def test_unparsable_prediction(self):
         request = VerifyRequest(
             request_id="req-5",
-            prediction=r"\boxed{@#$%^&*()}",
+            prediction=r"\boxed{51",
             gold="4",
             strict=True,
             timeout_seconds=1,
         )
         response = _verify_answer_worker(request)
-        # Should be unparsable or internal_error depending on what math_verify does
-        assert response.status in {"unparsable", "internal_error"}
+        assert response.status == "unparsable"
 
     def test_unparsable_gold(self):
         request = VerifyRequest(

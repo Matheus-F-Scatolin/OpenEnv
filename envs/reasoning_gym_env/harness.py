@@ -15,6 +15,7 @@ the collect pipeline).
 from __future__ import annotations
 
 import random
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from openenv.core.env_server.mcp_types import Tool
@@ -92,7 +93,16 @@ class ReasoningGymSessionFactory(ResourceSessionFactory):
         episode_id: str | None = None,
     ) -> StepEnvSessionAdapter:
         client = self._client_factory()
-        effective_seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+        if isinstance(task, Mapping) and "split" in task and "index" in task:
+            reset_kwargs = {"split": task["split"], "index": task["index"]}
+            effective_seed = seed
+        else:
+            reset_kwargs = {
+                "dataset_name": self._dataset_name,
+                "dataset_config": self._dataset_config,
+                "size": 1,
+            }
+            effective_seed = seed if seed is not None else random.randint(0, 2**31 - 1)
 
         return StepEnvSessionAdapter(
             client=client,
@@ -110,11 +120,7 @@ class ReasoningGymSessionFactory(ResourceSessionFactory):
                 }
             ],
             tool_result_builder=_build_tool_result(),
-            reset_kwargs={
-                "dataset_name": self._dataset_name,
-                "dataset_config": self._dataset_config,
-                "size": 1,
-            },
+            reset_kwargs=reset_kwargs,
         )
 
 
