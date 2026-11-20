@@ -82,7 +82,7 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | --- | --- | --- |
 | `episode_id` | string | Stable id for resume (`<prefix>-<index>`) |
 | `messages` | list | Chat transcript (user/assistant/tool). TRL `SFTTrainer`-compatible |
-| `reward` | float | Env reward (derived via `_resolve_env_reward`, never synthesized) |
+| `reward` | float | Env reward: the last one in the tool trace, else the one `verify()` forwards; never synthesized |
 | `done` | bool | Whether the episode terminated |
 | `tool_trace` | list | Structured tool calls with args & results |
 | `metrics` | struct | Harness-level metrics (turns, tool_calls) |
@@ -90,6 +90,11 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `artifacts` | struct | Verification artifacts (final state, etc.) |
 | `task` | any | Optional task spec passed by `CollectRunner.tasks` |
 | `extra` | struct | Free-form annotations supplied by the caller |
+| `outcome` | string | `scored`: the environment ended the episode with a reward. `policy_error`: the harness ended it (no tool call, a turn or tool-call limit) after a step returned `reward` |
+
+An episode without a reward is not written and counts in `num_failed`: the
+environment ended it with none (outcome `unscored`, even when an earlier step
+returned a reward), or the harness ended it before any step returned one.
 
 `metadata.json` — run-level info (env, model, n, temperature, filter flags).
 
@@ -101,9 +106,10 @@ HF Dataset Viewer renders `results.jsonl` as `split=train`.
 - **Thin envs** — `OpenSpielSessionFactory` and friends live in the env package
   (`envs/<env>/harness.py`) and wrap the existing `EnvClient`. The collector
   treats the env as a black box.
-- **Rewards in env** — `EpisodeRecord.from_rollout` reuses the runtime's
-  `_resolve_env_reward` so any mismatch between the reward emitted by a tool
-  result and the one forwarded by `session.verify()` raises immediately.
+- **Rewards in env** — `EpisodeRecord.from_rollout` reads the reward as the
+  runtime's `_resolve_env_reward` does, so any mismatch between the reward
+  emitted by a tool result and the one forwarded by `session.verify()` raises
+  immediately. A missing reward stays None; it is never filled in.
 - **Provider-agnostic teacher** — `build_model_step` adapts any
   `openenv.core.llm_client.LLMClient` (OpenAI, Anthropic, OpenAI-compatible
   self-hosted endpoints) into a `ModelStep`. No schema code per provider.

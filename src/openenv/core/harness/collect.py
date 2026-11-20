@@ -29,7 +29,8 @@ from ..env_server.mcp_types import Tool
 from ..llm_client import LLMClient
 from ..utils import redact_secrets
 from .rollout import (
-    _resolve_env_reward,
+    _resolve_env_reward_or_none,
+    _tool_result_reward,
     HarnessAdapter,
     HarnessRolloutResult,
     HarnessRunLimits,
@@ -68,7 +69,7 @@ class EpisodeRecord:
 
     episode_id: str
     messages: list[dict[str, Any]]
-    reward: float
+    reward: float | None
     done: bool
     tool_trace: list[dict[str, Any]]
     metrics: dict[str, Any]
@@ -76,6 +77,10 @@ class EpisodeRecord:
     artifacts: dict[str, Any]
     task: Any = None
     extra: dict[str, Any] = field(default_factory=dict)
+    # Who ended the episode: "scored" or "unscored" (the environment, with or
+    # without a reward) or "policy_error" (the harness). Classify by this field,
+    # not by `reward is None`: a "policy_error" keeps an earlier step's reward.
+    outcome: str = "scored"
 
     @classmethod
     def from_rollout(
@@ -86,13 +91,48 @@ class EpisodeRecord:
         task: Any = None,
         extra: dict[str, Any] | None = None,
     ) -> "EpisodeRecord":
-        """Build a record from a harness rollout and its verification.
-
-        Uses ``_resolve_env_reward`` so that any disagreement between the
-        reward emitted inside the environment and the one forwarded by
-        ``verify()`` raises — preserving the "rewards in env" invariant.
         """
-        reward = _resolve_env_reward(rollout, verify)
+        Build a record from a harness rollout and its verification.
+
+        The environment ended the episode when the last tool result is done: the
+        outcome is `scored`, or `unscored` when neither that result nor `verify` has
+        a reward, even if an earlier step returned one. Otherwise the harness ended
+        it (a reply without a tool call, or a turn or tool-call limit): the outcome is
+        `policy_error`, with the last reward an earlier step returned, or None.
+
+        The reward is only read, never computed or filled in: the last one in the
+        tool trace, else the one `verify` forwards.
+
+        Args:
+            episode_id (`str`):
+                Id of the episode.
+            rollout (`HarnessRolloutResult`):
+                The harness rollout.
+            verify (`VerifyResult`):
+                The session's verification of the rollout.
+            task (`Any`, *optional*):
+                The task spec the episode ran.
+            extra (`dict[str, Any]`, *optional*):
+                Annotations supplied by the caller.
+
+        Returns:
+            `EpisodeRecord`: The record, with its `reward` and `outcome`.
+
+        Raises:
+            `ValueError`: If `verify` forwards a reward that differs from the last one
+                in the tool trace.
+        """
+        trace = rollout.tool_trace
+        env_ended = bool(trace) and trace[-1].result.done
+        if (
+            env_ended
+            and _tool_result_reward(trace[-1].result) is None
+            and verify.env_reward is None
+        ):
+            reward, outcome = None, "unscored"
+        else:
+            reward = _resolve_env_reward_or_none(rollout, verify)
+            outcome = "scored" if env_ended else "policy_error"
         return cls(
             episode_id=episode_id,
             messages=[dict(m) for m in rollout.messages],
@@ -104,6 +144,7 @@ class EpisodeRecord:
             artifacts=dict(verify.artifacts),
             task=task,
             extra=dict(extra or {}),
+            outcome=outcome,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -356,6 +397,15 @@ class CollectRunner:
                     if session is not None:
                         session.close()
 
+                # results.jsonl holds only episodes with a reward.
+                if record.reward is None:
+                    num_failed += 1
+                    progress.console.print(
+                        f"[red]failed[/red] {episode_id}: {record.outcome}, no reward"
+                    )
+                    progress.advance(task_id)
+                    continue
+
                 if should_keep is not None and not should_keep(record):
                     num_dropped += 1
                     progress.advance(task_id)
@@ -542,6 +592,8 @@ def build_dataset_readme(output_dir: Path) -> str:
             "- `episode_id` (string)",
             "- `messages` (chat transcript; TRL `SFTTrainer`-compatible)",
             "- `reward` (float)",
+            "- `outcome` (`scored`, or `policy_error` when the harness ended the "
+            "episode after a step returned `reward`)",
             "- `done` (bool)",
             "- `tool_trace` (list of `{tool_name, arguments, result}`)",
             "- `metrics`, `verify_metrics`, `artifacts`",

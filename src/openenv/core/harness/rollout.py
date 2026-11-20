@@ -326,11 +326,30 @@ def _tool_result_reward(tool_result: ToolResult) -> float | None:
     return float(reward)
 
 
-def _resolve_env_reward(
+def _resolve_env_reward_or_none(
     rollout: HarnessRolloutResult,
     verify: VerifyResult,
-) -> float:
-    """Resolve the final environment reward without allowing external synthesis."""
+) -> float | None:
+    """
+    Return the environment's reward for a rollout, or None when it gave none.
+
+    The reward is the last one in the tool trace, else the one `verify` forwards.
+    Nothing is computed, rounded or filled in.
+
+    Args:
+        rollout (`HarnessRolloutResult`):
+            The rollout whose tool results may carry the reward.
+        verify (`VerifyResult`):
+            The session's verification, which may forward the reward.
+
+    Returns:
+        `float` or `None`: The environment's reward, or None when neither the tool
+        trace nor `verify` has one.
+
+    Raises:
+        `ValueError`: If `verify` forwards a reward that differs from the last one in
+            the tool trace.
+    """
 
     trace_reward: float | None = None
     for entry in reversed(rollout.tool_trace):
@@ -355,9 +374,19 @@ def _resolve_env_reward(
 
     if trace_reward is not None:
         return trace_reward
-    if verify_reward is not None:
-        return verify_reward
-    raise ValueError("rollout did not produce an environment reward")
+    return verify_reward
+
+
+def _resolve_env_reward(
+    rollout: HarnessRolloutResult,
+    verify: VerifyResult,
+) -> float:
+    """Resolve the final environment reward without allowing external synthesis."""
+
+    reward = _resolve_env_reward_or_none(rollout, verify)
+    if reward is None:
+        raise ValueError("rollout did not produce an environment reward")
+    return reward
 
 
 class StepEnvSessionAdapter(ResourceSession):

@@ -18,10 +18,12 @@ from openenv.core.harness import (
     HarnessAdapter,
     HarnessRolloutResult,
     HarnessRunLimits,
+    MCPHarnessAdapter,
     ModelStep,
     ModelStepResult,
     ResourceSession,
     ResourceSessionFactory,
+    rollout as rollout_module,
     ToolResult,
     ToolTraceEntry,
     VerifyResult,
@@ -1154,3 +1156,168 @@ class TestBuildDatasetReadme:
 
         assert "OpenEnv rollouts" in readme
         assert "Schema" in readme
+
+
+def _rollout_with_rewards(
+    rewards: list[float | None], *, env_ended: bool = True
+) -> HarnessRolloutResult:
+    """A rollout whose tool results carry `rewards`; the last ends it if `env_ended`."""
+    trace = [
+        ToolTraceEntry(
+            tool_name="play_move",
+            arguments={"cell": i},
+            result=ToolResult(
+                data={"board": "..."},
+                done=env_ended and i == len(rewards) - 1,
+                metadata={"reward": reward},
+            ),
+        )
+        for i, reward in enumerate(rewards)
+    ]
+    return HarnessRolloutResult(
+        messages=[{"role": "user", "content": "play"}],
+        tool_trace=trace,
+        done=env_ended or not rewards,
+        metrics={"turns": len(rewards)},
+    )
+
+
+class _ScriptedSession(ResourceSession):
+    """Its task names how the episode ends: scored, unscored, text or cut."""
+
+    def __init__(self, task: str):
+        self.task = task
+
+    def initial_messages(self) -> list[dict[str, Any]]:
+        return [{"role": "user", "content": self.task}]
+
+    def list_tools(self) -> list[Tool]:
+        return []
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        reward = {"scored": 1.0, "unscored": None, "cut": 0.0}[self.task]
+        return ToolResult(
+            data={"ack": name}, done=self.task != "cut", metadata={"reward": reward}
+        )
+
+    def verify(
+        self,
+        transcript: list[dict[str, Any]],
+        final_state: Any | None = None,
+    ) -> VerifyResult:
+        return VerifyResult(env_reward=1.0 if self.task == "scored" else None)
+
+    def close(self) -> None:
+        pass
+
+
+class _ScriptedFactory(ResourceSessionFactory):
+    def create(
+        self,
+        task: Any,
+        seed: int | None = None,
+        episode_id: str | None = None,
+    ) -> _ScriptedSession:
+        return _ScriptedSession(task)
+
+
+def _move_unless_text_task(
+    messages: list[dict[str, Any]],
+    tools: list[Tool],
+    sampling: dict[str, Any],
+) -> ModelStepResult:
+    if messages[0]["content"] == "text":
+        return ModelStepResult(response=LLMResponse(content="I would play the centre."))
+    move = ToolCall(id="c1", name="play_move", args={"cell": 4})
+    return ModelStepResult(response=LLMResponse(content="", tool_calls=[move]))
+
+
+class TestEpisodeOutcome:
+    def test_environment_ended_with_a_reward_is_scored(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([0.0, 1.0]), VerifyResult(env_reward=1.0)
+        )
+
+        assert (record.reward, record.outcome) == (1.0, "scored")
+
+    def test_environment_ended_without_a_reward_is_unscored(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([None]), VerifyResult(env_reward=None)
+        )
+
+        assert (record.reward, record.outcome) == (None, "unscored")
+
+    def test_earlier_reward_is_not_the_score_of_an_unscored_episode(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([0.0, None]), VerifyResult(env_reward=None)
+        )
+
+        assert (record.reward, record.outcome) == (None, "unscored")
+
+    def test_reward_forwarded_by_verify_is_scored(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([None]), VerifyResult(env_reward=0.5)
+        )
+
+        assert (record.reward, record.outcome) == (0.5, "scored")
+
+    def test_verify_disagreeing_with_an_earlier_step_still_raises(self):
+        with pytest.raises(ValueError, match="must forward the environment reward"):
+            EpisodeRecord.from_rollout(
+                "ep", _rollout_with_rewards([0.0, None]), VerifyResult(env_reward=1.0)
+            )
+
+    def test_text_reply_is_a_policy_error_without_reward(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([]), VerifyResult(env_reward=None)
+        )
+
+        assert (record.reward, record.outcome) == (None, "policy_error")
+
+    def test_harness_cut_keeps_the_last_reward_as_a_policy_error(self):
+        record = EpisodeRecord.from_rollout(
+            "ep",
+            _rollout_with_rewards([0.0, 0.0], env_ended=False),
+            VerifyResult(env_reward=None),
+        )
+
+        assert (record.reward, record.outcome) == (0.0, "policy_error")
+
+    def test_outcome_is_serialized(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([None]), VerifyResult(env_reward=None)
+        )
+
+        payload = record.to_dict()
+
+        assert (payload["reward"], payload["outcome"]) == (None, "unscored")
+
+    def test_runner_writes_only_episodes_with_a_reward(self, tmp_path: Path):
+        runner = CollectRunner(
+            session_factory=_ScriptedFactory(),
+            harness_adapter=MCPHarnessAdapter(),
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["scored", "unscored", "text", "cut"],
+            limits=HarnessRunLimits(max_turns=2),
+        )
+
+        result = runner.run(model_step=_move_unless_text_task, num_episodes=4)
+
+        lines = (tmp_path / "results.jsonl").read_text().splitlines()
+        records = [json.loads(line) for line in lines]
+        assert [(r["task"], r["reward"], r["outcome"]) for r in records] == [
+            ("scored", 1.0, "scored"),
+            ("cut", 0.0, "policy_error"),
+        ]
+        assert (result.num_collected, result.num_failed) == (2, 2)
+
+    def test_resolve_env_reward_still_raises_where_the_new_helper_gives_none(self):
+        rollout = _rollout_with_rewards([None])
+        verify = VerifyResult(env_reward=None)
+
+        assert rollout_module._resolve_env_reward_or_none(rollout, verify) is None
+        with pytest.raises(ValueError, match="did not produce an environment reward"):
+            rollout_module._resolve_env_reward(rollout, verify)
+
+    def test_dataset_readme_lists_outcome(self, tmp_path: Path):
+        assert "- `outcome`" in build_dataset_readme(tmp_path)
