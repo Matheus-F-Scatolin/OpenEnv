@@ -14,6 +14,7 @@ from openenv.cli.commands import (
     build,
     catalog,
     collect,
+    evaluate,
     fork,
     harbor,
     import_env,
@@ -68,6 +69,10 @@ app.command(
     name="collect",
     help="Collect rollouts from a deployed OpenEnv environment",
 )(collect.collect)
+app.command(
+    name="eval",
+    help="Evaluate a model on a split of an environment's Task API tasks",
+)(evaluate.evaluate)
 app.add_typer(catalog.app, name="catalog")
 app.command(name="discover")(catalog.discover)
 

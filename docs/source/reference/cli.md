@@ -457,6 +457,31 @@ pass the key through `OPENAI_API_KEY` instead.
 
 [[autodoc]] openenv.cli.commands.collect.collect
 
+## `openenv eval`
+
+Evaluate a model on a split of an environment's tasks. The environment must
+implement the [Task API](../guides/task-api), and its session factory must pass
+each task's `split` and `index`, with the seed, to `reset()`. The tasks come from
+the server, so the variant in the env spec does not choose them. The model is
+reached through an OpenAI-compatible endpoint, with the same URL rules as
+`openenv collect`.
+
+```bash
+openenv eval reasoning_gym:chain_sum --base-url http://localhost:8001 \
+    --split test --llm-endpoint http://localhost:8080/v1 --model base \
+    --output-dir runs/eval-step0000
+```
+
+`--output-dir` must be new or empty. The episodes go to `run-0000/` inside it
+(`results.jsonl` for the scored ones, `errors.jsonl` for the others, and
+`metadata.json`), and the scores to `result.json`, with every setting under
+`eval_parameters`. `--limit`, `--seed` (repeatable), `--samples-per-task`,
+`--temperature` and `--success-threshold` are the settings of
+[`~openenv.core.evals.EnvEvalHarness`]. The API key, if the endpoint needs one,
+is read from `OPENAI_API_KEY` and written nowhere.
+
+[[autodoc]] openenv.cli.commands.evaluate.evaluate
+
 ## `openenv harbor`
 
 Runs [Harbor](../environments/harbor) tasks with real coding agents and
