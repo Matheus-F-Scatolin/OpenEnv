@@ -41,7 +41,7 @@ src/
 │   │   ├── harness/              # Agent protocols and captured trace collection
 │   │   │   └── capture/              # Dialect adapters, session routing, exact tokens, SSE replay
 │   │   │
-│   │   ├── evals/                # Evaluation harnesses: InspectAIHarness, EnvEvalHarness
+│   │   ├── evals/                # Evaluation harnesses: InspectAIHarness, EnvEvalHarness; EvalSchedule
 │   │   │
 │   │   ├── env_server/           # Server-side components
 │   │   │   ├── interfaces.py         # Environment abstract base class
