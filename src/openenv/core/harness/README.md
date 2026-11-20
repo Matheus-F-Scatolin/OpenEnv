@@ -90,6 +90,7 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `artifacts` | struct | Verification artifacts (final state, etc.) |
 | `task` | any | Optional task spec passed by `CollectRunner.tasks` |
 | `extra` | struct | Free-form annotations supplied by the caller |
+| `seed` | int or null | Seed passed to the session factory (`CollectRunner.seeds`, aligned with `tasks`), else null |
 
 `metadata.json` — run-level info (env, model, n, temperature, filter flags).
 

@@ -1154,3 +1154,159 @@ class TestBuildDatasetReadme:
 
         assert "OpenEnv rollouts" in readme
         assert "Schema" in readme
+
+
+class TestCollectRunnerSeeds:
+    def _runner(self, tmp_path: Path, factory: _FakeFactory, **options: Any):
+        return CollectRunner(
+            session_factory=factory,
+            harness_adapter=_FakeAdapter(),
+            serializer=RolloutSerializer(tmp_path),
+            **options,
+        )
+
+    @staticmethod
+    def _rows(tmp_path: Path) -> list[dict[str, Any]]:
+        lines = (tmp_path / "results.jsonl").read_text().splitlines()
+        return [json.loads(line) for line in lines]
+
+    def test_passes_each_seed_to_the_factory_and_the_record(self, tmp_path: Path):
+        factory = _FakeFactory()
+        runner = self._runner(tmp_path, factory, tasks=["a", "b", "c"], seeds=[0, 1, 2])
+
+        runner.run(model_step=_noop_model_step, num_episodes=3)
+
+        assert [(c["task"], c["seed"]) for c in factory.created] == [
+            ("a", 0),
+            ("b", 1),
+            ("c", 2),
+        ]
+        rows = self._rows(tmp_path)
+        assert [(r["task"], r["seed"]) for r in rows] == [("a", 0), ("b", 1), ("c", 2)]
+
+    def test_without_seeds_the_factory_gets_none(self, tmp_path: Path):
+        factory = _FakeFactory()
+
+        self._runner(tmp_path, factory).run(model_step=_noop_model_step, num_episodes=2)
+
+        assert [c["seed"] for c in factory.created] == [None, None]
+        assert [r["seed"] for r in self._rows(tmp_path)] == [None, None]
+
+    def test_resume_consumes_seed_slots_for_skipped_episodes(self, tmp_path: Path):
+        self._runner(tmp_path, _FakeFactory(), seeds=iter([10, 11])).run(
+            model_step=_noop_model_step, num_episodes=2
+        )
+        factory = _FakeFactory()
+
+        self._runner(tmp_path, factory, seeds=iter([10, 11, 12, 13])).run(
+            model_step=_noop_model_step, num_episodes=4
+        )
+
+        assert [c["seed"] for c in factory.created] == [12, 13]
+        assert [(r["episode_id"], r["seed"]) for r in self._rows(tmp_path)] == [
+            ("ep-000000", 10),
+            ("ep-000001", 11),
+            ("ep-000002", 12),
+            ("ep-000003", 13),
+        ]
+
+    def test_failed_episode_is_retried_with_its_own_seed(self, tmp_path: Path):
+        class FailOnce(_FakeAdapter):
+            failed = False
+
+            def run_white_box(self, model_step, session, limits=None):
+                if session.task == "b" and not self.failed:
+                    self.failed = True
+                    raise RuntimeError("transient rollout failure")
+                return super().run_white_box(model_step, session, limits)
+
+        factory = _FakeFactory()
+        runner = CollectRunner(
+            session_factory=factory,
+            harness_adapter=FailOnce(),
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["a", "b", "c"],
+            seeds=[7, 8, 9],
+        )
+        runner.run(model_step=_noop_model_step, num_episodes=3)
+
+        runner.run(model_step=_noop_model_step, num_episodes=3)
+
+        assert [(c["task"], c["seed"]) for c in factory.created] == [
+            ("a", 7),
+            ("b", 8),
+            ("c", 9),
+            ("b", 8),
+        ]
+        assert sorted((r["task"], r["seed"]) for r in self._rows(tmp_path)) == [
+            ("a", 7),
+            ("b", 8),
+            ("c", 9),
+        ]
+
+    @pytest.mark.parametrize("resume", [True, False])
+    def test_reusing_one_shot_seeds_refuses_before_accessing_results(
+        self, tmp_path, resume
+    ):
+        consumed = []
+
+        def seeds():
+            for seed in [0, 1, 2, 3]:
+                consumed.append(seed)
+                yield seed
+
+        factory = _FakeFactory()
+        serializer = RolloutSerializer(tmp_path)
+        runner = CollectRunner(
+            session_factory=factory,
+            harness_adapter=_FakeAdapter(),
+            serializer=serializer,
+            tasks=["a", "b", "c", "d"],
+            seeds=seeds(),
+        )
+        runner.run(model_step=_noop_model_step, num_episodes=2)
+        original = serializer.results_path.read_bytes()
+
+        with (
+            patch.object(serializer, "collected_episode_ids") as read,
+            patch.object(serializer, "write_episode") as write,
+            patch.object(runner, "_reset_results_file") as reset,
+            pytest.raises(ValueError, match="one-shot.*fresh iterator"),
+        ):
+            runner.run(model_step=_noop_model_step, num_episodes=4, resume=resume)
+
+        read.assert_not_called()
+        write.assert_not_called()
+        reset.assert_not_called()
+        assert consumed == [0, 1]
+        assert len(factory.created) == 2
+        assert serializer.results_path.read_bytes() == original
+
+    def test_reusable_seeds_restart_for_a_new_collection(self, tmp_path: Path):
+        factory = _FakeFactory()
+        runner = self._runner(tmp_path, factory, seeds=[3, 4])
+        runner.run(model_step=_noop_model_step, num_episodes=2)
+
+        runner.run(model_step=_noop_model_step, num_episodes=2, episode_id_prefix="new")
+
+        assert [c["seed"] for c in factory.created] == [3, 4, 3, 4]
+
+    def test_episodes_after_the_last_seed_get_none(self, tmp_path: Path):
+        factory = _FakeFactory()
+
+        self._runner(tmp_path, factory, seeds=[5]).run(
+            model_step=_noop_model_step, num_episodes=2
+        )
+
+        assert [c["seed"] for c in factory.created] == [5, None]
+
+    def test_from_rollout_keeps_the_seed(self):
+        record = EpisodeRecord.from_rollout(
+            "ep1", _fake_rollout(), _fake_verify(), seed=3
+        )
+
+        assert record.seed == 3
+        assert record.to_dict()["seed"] == 3
+
+    def test_dataset_readme_lists_seed(self, tmp_path: Path):
+        assert "- `seed`" in build_dataset_readme(tmp_path)
