@@ -242,6 +242,16 @@ All classes below are importable from `openenv.core.harness`. See [Harnesses in 
 
 [[autodoc]] openenv.core.harness.training.TrainingTurn
 
+## Task sampling
+
+A task sampler chooses which task specs a trainer or an evaluation runs next, and reads the rewards the environment returned for them without changing them. The classes below are importable from `openenv.core.task_sampler`.
+
+[[autodoc]] openenv.core.task_sampler.TaskSampler
+
+[[autodoc]] openenv.core.task_sampler.UniformSampler
+
+[[autodoc]] openenv.core.task_sampler.SequentialSampler
+
 ## Evaluation
 
 See [Evaluating with Environments](../tutorials/evaluation-inspect) for a worked example.
