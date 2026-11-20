@@ -455,6 +455,12 @@ The resolved endpoint is printed when the run starts. Only `http(s)` URLs are
 accepted, and credentials, query strings and fragments in the URL are rejected:
 pass the key through `OPENAI_API_KEY` instead.
 
+`--tasks PATH` reads a JSON Lines file with one task spec per line and gives the
+i-th spec to episode i's session; each record keeps its spec, and
+`metadata.json` records the path and the number of tasks. `--num-episodes` may
+not exceed that number. What a task selects depends on the environment's session
+factory; one that does not read tasks ignores them.
+
 [[autodoc]] openenv.cli.commands.collect.collect
 
 ## `openenv harbor`

@@ -412,3 +412,92 @@ def test_resolved_llm_endpoint_is_printed(tmp_path: Path, mock_pipeline):
     assert result.exit_code == 0, result.output
     printed = [str(call.args[0]) for call in console.print.call_args_list]
     assert "[cyan]LLM endpoint:[/cyan] http://localhost" in printed
+
+
+def _collect_args(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "collect",
+        "openspiel:tic_tac_toe",
+        "--base-url",
+        "https://example.hf.space",
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--provider",
+        "scripted",
+        *extra,
+    ]
+
+
+def _usage_error_text(output: str) -> str:
+    plain = _ANSI_ESCAPE.sub("", output)
+    return " ".join(plain.replace("│", " ").split())
+
+
+class TestTasksOption:
+    def test_task_specs_reach_the_runner_and_the_metadata(
+        self, tmp_path: Path, mock_pipeline
+    ):
+        tasks_path = tmp_path / "tasks.jsonl"
+        tasks_path.write_text(
+            '{"id": "t0", "split": "test", "index": 0}\n'
+            "\n"
+            '{"id": "t1", "split": "test", "index": 1}\n'
+            '"plain"\n'
+        )
+
+        result = runner.invoke(
+            app, _collect_args(tmp_path, "--tasks", str(tasks_path), "-n", "3")
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_pipeline["runner_cls"].call_args.kwargs["tasks"] == [
+            {"id": "t0", "split": "test", "index": 0},
+            {"id": "t1", "split": "test", "index": 1},
+            "plain",
+        ]
+        metadata = mock_pipeline[
+            "serializer_cls"
+        ].return_value.write_metadata.call_args.args[0]
+        assert metadata["tasks"] == str(tasks_path)
+        assert metadata["num_tasks"] == 3
+
+    def test_without_tasks_the_runner_gets_none(self, tmp_path: Path, mock_pipeline):
+        result = runner.invoke(app, _collect_args(tmp_path))
+
+        assert result.exit_code == 0, result.output
+        assert mock_pipeline["runner_cls"].call_args.kwargs["tasks"] is None
+        metadata = mock_pipeline[
+            "serializer_cls"
+        ].return_value.write_metadata.call_args.args[0]
+        assert (metadata["tasks"], metadata["num_tasks"]) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("content", "extra", "expected_message"),
+        [
+            ('{"id": "t0"}\n{"id": "t1"}\n', ["-n", "3"], "exceeds the 2 tasks"),
+            ('{"id": "t0"}\nnot json\n', ["-n", "1"], "tasks.jsonl:2: invalid JSON"),
+        ],
+    )
+    def test_bad_tasks_file_is_usage_error_before_output_is_written(
+        self, tmp_path: Path, mock_pipeline, content, extra, expected_message
+    ):
+        tasks_path = tmp_path / "tasks.jsonl"
+        tasks_path.write_text(content)
+
+        result = runner.invoke(
+            app, _collect_args(tmp_path, "--tasks", str(tasks_path), *extra)
+        )
+
+        assert result.exit_code == 2, result.output
+        assert expected_message in _usage_error_text(result.output)
+        mock_pipeline["serializer_cls"].return_value.write_metadata.assert_not_called()
+        mock_pipeline["runner_instance"].run.assert_not_called()
+
+    def test_missing_tasks_file_is_usage_error(self, tmp_path: Path, mock_pipeline):
+        result = runner.invoke(
+            app, _collect_args(tmp_path, "--tasks", str(tmp_path / "missing.jsonl"))
+        )
+
+        assert result.exit_code == 2, result.output
+        assert "does not exist" in _usage_error_text(result.output)
+        mock_pipeline["serializer_cls"].return_value.write_metadata.assert_not_called()

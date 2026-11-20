@@ -252,6 +252,19 @@ def collect(
         int,
         typer.Option("--num-episodes", "-n", help="Number of episodes to collect."),
     ] = 10,
+    tasks: Annotated[
+        Path | None,
+        typer.Option(
+            "--tasks",
+            exists=True,
+            dir_okay=False,
+            help=(
+                "JSON Lines file with one task spec per line; episode i gets the "
+                "i-th task. What a task selects depends on the environment's "
+                "session factory; one that does not read tasks ignores them."
+            ),
+        ),
+    ] = None,
     max_turns: Annotated[
         int, typer.Option("--max-turns", help="Max tool/model turns per episode.")
     ] = 9,
@@ -375,6 +388,26 @@ def collect(
                 param_hint="--dataset-config",
             )
 
+    task_specs: list[Any] | None = None
+    if tasks is not None:
+        task_specs = []
+        lines = tasks.read_text(encoding="utf-8").splitlines()
+        for line_number, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                task_specs.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise typer.BadParameter(
+                    f"{tasks}:{line_number}: invalid JSON: {exc.msg}",
+                    param_hint="--tasks",
+                ) from exc
+        if num_episodes > len(task_specs):
+            raise typer.BadParameter(
+                f"{num_episodes} exceeds the {len(task_specs)} tasks in {tasks}.",
+                param_hint="--num-episodes",
+            )
+
     factory = _build_session_factory(
         env, base_url, dataset_config=parsed_dataset_config
     )
@@ -404,6 +437,8 @@ def collect(
             "num_episodes_requested": num_episodes,
             "temperature": temperature,
             "keep_losses": keep_losses,
+            "tasks": None if tasks is None else str(tasks),
+            "num_tasks": None if task_specs is None else len(task_specs),
         }
     )
 
@@ -413,6 +448,7 @@ def collect(
         session_factory=factory,
         harness_adapter=MCPHarnessAdapter(),
         serializer=serializer,
+        tasks=task_specs,
         limits=HarnessRunLimits(max_turns=max_turns),
     )
 
