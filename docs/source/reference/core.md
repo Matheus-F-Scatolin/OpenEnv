@@ -148,6 +148,10 @@ For dataset-backed environments that publish enumerable tasks and splits, see th
 
 [[autodoc]] openenv.core.generic_client.GenericAction
 
+### Task API client
+
+[[autodoc]] openenv.core.task_api_client.TaskAPIClient
+
 ### LLM client
 
 [[autodoc]] openenv.core.llm_client.ToolCall

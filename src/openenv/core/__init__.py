@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     )
     from .mcp_client import MCPClientBase, MCPToolClient
     from .sync_client import SyncEnvClient
+    from .task_api_client import TaskAPIClient
 
 __all__ = [
     "EnvClient",
@@ -32,6 +33,7 @@ __all__ = [
     "GenericAction",
     "MCPClientBase",
     "MCPToolClient",
+    "TaskAPIClient",
     "AnthropicClient",
     "LLMClient",
     "LLMResponse",
@@ -49,6 +51,7 @@ _LAZY_ATTRS = {
     "GenericAction": (".generic_client", "GenericAction"),
     "MCPClientBase": (".mcp_client", "MCPClientBase"),
     "MCPToolClient": (".mcp_client", "MCPToolClient"),
+    "TaskAPIClient": (".task_api_client", "TaskAPIClient"),
     "AnthropicClient": (".llm_client", "AnthropicClient"),
     "LLMClient": (".llm_client", "LLMClient"),
     "LLMResponse": (".llm_client", "LLMResponse"),

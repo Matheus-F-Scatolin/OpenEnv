@@ -33,6 +33,7 @@ src/
 │   │
 │   ├── core/                 # Core abstractions - the heart of OpenEnv
 │   │   ├── env_client.py         # EnvClient base class (WebSocket client)
+│   │   ├── task_api_client.py    # TaskAPIClient (HTTP Task API discovery)
 │   │   ├── client_types.py       # Client-side type definitions
 │   │   ├── utils.py              # Shared utilities
 │   │   │
