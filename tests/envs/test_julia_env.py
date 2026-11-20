@@ -121,6 +121,70 @@ class TestJuliaServerImport:
         assert callable(transform)
 
 
+def _transform_code(core_code, test_code=""):
+    """Run the safety transform on an observation that already earned the full-pass reward."""
+    from julia_env import JuliaObservation
+    from julia_env.server import create_safe_julia_transform
+
+    obs = JuliaObservation(
+        reward=1.5, metadata={"core_code": core_code, "test_code": test_code}
+    )
+    return create_safe_julia_transform()(obs)
+
+
+class TestJuliaSafetyTransform:
+    """The safety penalty must hit dangerous calls, not names that end in one."""
+
+    @pytest.mark.parametrize(
+        ("core_code", "test_code"),
+        [
+            ("using LinearAlgebra\nunit(v) = v / norm(v)", ""),
+            ("using Distributions\nx = rand(Uniform(0, 1))", ""),
+            ("using DataFrames\nt(df) = transform(df, :a => ByRow(abs) => :b)", ""),
+            ("f(x) = x", "using Test, LinearAlgebra\n@test norm([3.0, 4.0]) == 5.0"),
+        ],
+        ids=["norm", "Uniform", "transform", "norm_in_test_code"],
+    )
+    def test_names_ending_in_a_pattern_are_not_penalized(self, core_code, test_code):
+        obs = _transform_code(core_code, test_code)
+
+        assert obs.reward == 1.5
+        assert "safety_violation" not in obs.metadata
+
+    @pytest.mark.parametrize(
+        "core_code",
+        [
+            "run(`ls`)",
+            'rm("data.txt")',
+            'Base.rm("data.txt")',
+            'x = read("secret.txt", String)',
+            'write("out.txt", "x")',
+            'ccall(:system, Cint, (Cstring,), "ls")',
+            "p = unsafe_load(ptr)",
+            "x = Base._unsafe_getindex(IndexLinear(), A, 1)",
+            'download("http://example.com/x")',
+            "Base.exit(0)",
+        ],
+        ids=[
+            "run",
+            "rm",
+            "Base.rm",
+            "read",
+            "write",
+            "ccall",
+            "unsafe_load",
+            "_unsafe_getindex",
+            "download",
+            "Base.exit",
+        ],
+    )
+    def test_dangerous_calls_are_penalized(self, core_code):
+        obs = _transform_code(core_code)
+
+        assert obs.reward == 1.5 - 3.0
+        assert "safety_violation" in obs.metadata
+
+
 def test_process_pool_failed_init_cleans_up(monkeypatch):
     """__del__ must not raise when __init__ fails before the pool is set up."""
     import gc
@@ -288,3 +352,53 @@ class TestJuliaExecutor:
 
         assert result.exit_code != 0
         assert result.stderr != ""
+
+
+# Prints whether a server variable is visible, the uid, whether a socket can be opened, and
+# what the syscalls that reach into other processes return.
+_ISOLATION_PROBE = """
+println(haskey(ENV, "SERVER_SECRET_FOR_TEST") ? "SECRET_VISIBLE" : "no secret")
+println("uid=", ccall(:getuid, Cint, ()))
+using Sockets
+try
+    close(listen(IPv4(0x7f000001), 0))
+    println("SOCKET_OPENED")
+catch e
+    println("socket refused: ", e)
+end
+# ptrace, process_vm_readv, process_vm_writev, pidfd_getfd, io_uring_enter, io_uring_register
+nrs = Sys.ARCH == :x86_64 ? [101, 310, 311, 438, 426, 427] : [117, 270, 271, 438, 426, 427]
+for nr in nrs
+    r = ccall(:syscall, Clong, (Clong, Clong, Clong, Clong, Clong), nr, 0, 0, 0, 0)
+    println("syscall ", nr, " ", r, " ", Libc.errno())
+end
+"""
+
+
+@pytest.mark.skipif(not julia_available, reason=julia_skip_reason)
+@pytest.mark.parametrize("use_pool", [False, True])
+def test_julia_code_gets_no_server_env_and_no_sockets(monkeypatch, use_pool):
+    from julia_env.server.julia_executor import JuliaExecutor
+    from julia_env.server.julia_sandbox import _socket_filter_unavailable
+
+    monkeypatch.setenv("SERVER_SECRET_FOR_TEST", "not-a-real-secret")
+    if use_pool:
+        assert JuliaExecutor.enable_process_pool(size=1)
+    try:
+        result = JuliaExecutor(use_process_pool=use_pool).run(_ISOLATION_PROBE)
+    finally:
+        if use_pool:
+            JuliaExecutor.shutdown_pool()
+
+    assert result.exit_code == 0, result.stderr
+    assert "no secret" in result.stdout
+    if not _socket_filter_unavailable():
+        assert "socket refused" in result.stdout, result.stdout
+        denied = [
+            line for line in result.stdout.splitlines() if line.startswith("syscall ")
+        ]
+        assert len(denied) == 6 and all(line.endswith(" -1 1") for line in denied), (
+            denied
+        )
+    if os.geteuid() == 0:
+        assert "uid=65534" in result.stdout, result.stdout

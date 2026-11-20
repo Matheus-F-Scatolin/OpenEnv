@@ -91,6 +91,7 @@ class ReasoningGymEnvironment(Environment):
         self._dataset = None
         self._dataset_iterator = None
         self._current_entry = None
+        self._final_observation: Optional[ReasoningGymObservation] = None
 
         # Dataset configuration tracking
         self._dataset_name: Optional[str] = None
@@ -342,6 +343,7 @@ class ReasoningGymEnvironment(Environment):
             # Iterator exhausted - restart it
             self._dataset_iterator = iter(self._dataset)
             self._current_entry = next(self._dataset_iterator)
+        self._final_observation = None
 
         question = self._current_entry["question"]
 
@@ -370,6 +372,12 @@ class ReasoningGymEnvironment(Environment):
         Returns:
             ReasoningGymObservation with score and correct answer, always done=True
         """
+        # The episode is single-step: once an answer has been scored (and the
+        # correct answer revealed), later steps return the same final
+        # observation and are not scored again.
+        if self._final_observation is not None:
+            return self._final_observation.model_copy(deep=True)
+
         self._state.step_count += 1
 
         # Validate current state
@@ -392,7 +400,7 @@ class ReasoningGymEnvironment(Environment):
         correct_answer = self._current_entry["answer"]
         metadata = self._current_entry.get("metadata", {})
 
-        return ReasoningGymObservation(
+        observation = ReasoningGymObservation(
             question=None,
             score=score,
             correct_answer=correct_answer,
@@ -400,6 +408,8 @@ class ReasoningGymEnvironment(Environment):
             reward=reward,
             dataset_metadata=metadata if metadata else None,
         )
+        self._final_observation = observation.model_copy(deep=True)
+        return observation
 
     @property
     def state(self) -> State:

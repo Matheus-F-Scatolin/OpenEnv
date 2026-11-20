@@ -33,7 +33,7 @@ my_env/
 Class names come from the environment name, with a trailing `_env` dropped: `my_env` gives `MyAction`, `MyObservation`, `MyEnvironment` and `MyEnv`. The steps below go through each file. Edit them to replace the echo logic with yours. If you're working inside the OpenEnv repo, move the folder under `envs/`.
 
 > [!TIP]
-> If you already have an ORS/OpenReward or Prime Intellect Verifiers environment, run `openenv import SOURCE --name my_env --output-dir DIR` instead. It detects the source type, vendors the source under the generated package and emits an OpenEnv wrapper with task/split and MCP-style tool actions. Non-secret data files and portable dependencies from the source tree are carried over.
+> If you already have an ORS/OpenReward or Prime Intellect Verifiers environment, or an AgentEnv bundle, run `openenv import SOURCE --name my_env --output-dir DIR` instead. It detects the source type and vendors non-secret data files and portable dependencies into the generated package. ORS/OpenReward and Verifiers use generated wrappers; AgentEnv delegates serving to `agent_env.openenv.build_app` and vendors only the selected bundle. AgentEnv requires local Docker, and the generated Dockerfile alone cannot provide a working deployment. Its generated client is an `MCPToolClient`. See the generated README and [CLI reference](../reference/cli#openenv-import) for prerequisites.
 
 ## 2. Define the models
 
@@ -239,6 +239,10 @@ Check it before deploying:
 ```bash
 openenv validate --level static --skip-build
 ```
+
+### Keep secrets away from model code
+
+If your environment runs code the model writes (Python, shell, another language), run it in a separate process that never gets the server's secrets. Start that process from an allowlist of environment variables (`PATH`, `HOME`, locale and what the tool needs), never from a copy of `os.environ`, and keep tokens the server needs, for example for LLM calls, in the server process. An interpreter that restricts imports, such as smolagents' `LocalPythonExecutor`, is not a sandbox: don't run it inside the server process when the server holds a token. `coding_env` runs one worker process per session as an example.
 
 ## 7. Deploy
 
