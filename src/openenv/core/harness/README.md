@@ -91,10 +91,20 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `task` | any | Optional task spec passed by `CollectRunner.tasks` |
 | `extra` | struct | Free-form annotations supplied by the caller |
 | `outcome` | string | `scored`: the environment ended the episode with a reward. `policy_error`: the harness ended it (no tool call, a turn or tool-call limit) after a step returned `reward` |
+| `error` | string or null | `<Type>: <message>` of the exception that ended the episode (`errors.jsonl` only) |
 
-An episode without a reward is not written and counts in `num_failed`: the
-environment ended it with none (outcome `unscored`, even when an earlier step
-returned a reward), or the harness ended it before any step returned one.
+`errors.jsonl` — one record per episode without a reward, with the same fields
+and `reward` null. Its `outcome` says why:
+
+| outcome | when |
+| --- | --- |
+| `unscored` | The environment ended the episode with no reward, even when an earlier step returned one |
+| `policy_error` | The harness ended it before any step returned a reward, or the rollout raised an exception the policy can cause (an unparsable tool call, an unknown tool, a 400 from the model endpoint such as the context length, a server error frame, an environment step timeout) |
+| `infra_error` | A failure the policy cannot cause: the session could not be created; the connection to the environment was lost; the model endpoint failed to connect or timed out, or answered 401, 403, 404, 429 or 5xx; or `verify()` forwarded a reward that disagrees with the tool trace |
+
+An exception record keeps the transcript when the rollout finished. These
+episodes count in `CollectResult.num_failed`, split into `num_unscored`,
+`num_policy_errors` and `num_infra_errors`.
 
 `metadata.json` — run-level info (env, model, n, temperature, filter flags).
 
@@ -115,6 +125,9 @@ HF Dataset Viewer renders `results.jsonl` as `split=train`.
   self-hosted endpoints) into a `ModelStep`. No schema code per provider.
 - **Resume** — `RolloutSerializer.collected_episode_ids()` reads prior runs
   from disk; `CollectRunner.run(resume=True)` skips ids already serialized.
+  Only `results.jsonl` counts, so a failed episode is retried and
+  `errors.jsonl` keeps every failed attempt. `resume=False` moves both files
+  aside.
 - **Filtering** — `should_keep` is a `Callable[[EpisodeRecord], bool]`. Defaults
   to keeping everything. The CLI filters `reward >= 0` unless `--keep-losses`
   is set.

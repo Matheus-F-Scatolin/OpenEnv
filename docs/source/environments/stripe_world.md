@@ -42,7 +42,7 @@ Webhook delivery and the parts of Stripe outside Billing and Payments are not mo
   under `["state"]["db"]["log"]`: one entry per changed row, with its table, operation, and the
   row before and after. Grade the episode from those rows.
 - OpenEnv's `CollectRunner` and `build_harness_rollout_func` need a reward from the environment.
-  With Stripe World, `CollectRunner` records every episode as failed and
+  With Stripe World, `CollectRunner` records every episode as failed (in `errors.jsonl`) and
   `build_harness_rollout_func` raises `ValueError`.
 
 ## Fixtures

@@ -434,7 +434,9 @@ def collect(
         f"[green]Collected[/green]={result.num_collected} "
         f"[yellow]skipped[/yellow]={result.num_skipped} "
         f"[red]dropped[/red]={result.num_dropped} "
-        f"[red]failed[/red]={result.num_failed}"
+        f"[red]failed[/red]={result.num_failed} "
+        f"(unscored={result.num_unscored} policy_error={result.num_policy_errors} "
+        f"infra_error={result.num_infra_errors})"
     )
     console.print(
         f"avg_reward={result.avg_reward:.3f} success_rate={result.success_rate:.0%}"

@@ -25,6 +25,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable
 
+import openai
+from websockets.exceptions import ConnectionClosed
+
 from ..env_server.mcp_types import Tool
 from ..llm_client import LLMClient
 from ..utils import redact_secrets
@@ -43,7 +46,22 @@ from .rollout import (
 _SUPPORTED_SAMPLING_KEYS = frozenset({"temperature", "max_tokens", "top_p"})
 
 RESULTS_FILENAME = "results.jsonl"
+ERRORS_FILENAME = "errors.jsonl"
 METADATA_FILENAME = "metadata.json"
+
+# Failures the policy's output cannot cause: a lost connection to the environment,
+# and the model endpoint's connection, timeout, authentication, routing, rate-limit
+# and server errors. Any other exception raised during a rollout is the policy's.
+_INFRA_ERRORS = (
+    ConnectionError,
+    ConnectionClosed,
+    openai.APIConnectionError,
+    openai.AuthenticationError,
+    openai.PermissionDeniedError,
+    openai.NotFoundError,
+    openai.RateLimitError,
+    openai.InternalServerError,
+)
 
 
 def _tool_trace_entry_to_plain(entry: Any) -> dict[str, Any]:
@@ -78,9 +96,13 @@ class EpisodeRecord:
     task: Any = None
     extra: dict[str, Any] = field(default_factory=dict)
     # Who ended the episode: "scored" or "unscored" (the environment, with or
-    # without a reward) or "policy_error" (the harness). Classify by this field,
-    # not by `reward is None`: a "policy_error" keeps an earlier step's reward.
+    # without a reward), "policy_error" (the harness, or an exception the policy
+    # can cause) or "infra_error" (a failure the policy cannot cause). Classify by
+    # this field, not by `reward is None`: a "policy_error" keeps an earlier
+    # step's reward.
     outcome: str = "scored"
+    # "<Type>: <message>" of the exception that ended the episode, if any.
+    error: str | None = None
 
     @classmethod
     def from_rollout(
@@ -166,14 +188,25 @@ class RolloutSerializer:
         return self._output_dir / RESULTS_FILENAME
 
     @property
+    def errors_path(self) -> Path:
+        return self._output_dir / ERRORS_FILENAME
+
+    @property
     def metadata_path(self) -> Path:
         return self._output_dir / METADATA_FILENAME
 
     def write_episode(self, record: EpisodeRecord) -> None:
+        self._append(self.results_path, record)
+
+    def write_error(self, record: EpisodeRecord) -> None:
+        """Append the record of an episode without a reward to `errors.jsonl`."""
+        self._append(self.errors_path, record)
+
+    def _append(self, path: Path, record: EpisodeRecord) -> None:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         line = (json.dumps(record.to_dict(), default=str) + "\n").encode("utf-8")
-        with self.results_path.open("a+b") as handle:
-            separator = self._append_separator(handle)
+        with path.open("a+b") as handle:
+            separator = self._append_separator(handle, path)
             handle.write(separator + line)
 
     def write_metadata(self, metadata: dict[str, Any]) -> None:
@@ -198,10 +231,10 @@ class RolloutSerializer:
                 raw = raw.strip()
                 if not raw:
                     continue
-                ids.add(self._episode_id_from_line(raw, line_number))
+                ids.add(self._episode_id_from_line(raw, line_number, self.results_path))
         return ids
 
-    def _append_separator(self, handle: BinaryIO) -> bytes:
+    def _append_separator(self, handle: BinaryIO, path: Path) -> bytes:
         """Return a newline when an existing complete final record lacks one."""
         end = handle.seek(0, 2)
         if not end:
@@ -224,12 +257,14 @@ class RolloutSerializer:
             chunks.append(chunk)
         final_line = b"".join(reversed(chunks))
         if final_line.strip():
-            self._episode_id_from_line(final_line, "final line")
+            self._episode_id_from_line(final_line, "final line", path)
         return b"\n"
 
-    def _episode_id_from_line(self, raw: bytes, line_number: int | str) -> str:
+    def _episode_id_from_line(
+        self, raw: bytes, line_number: int | str, path: Path
+    ) -> str:
         """Parse and validate one non-empty JSONL episode record."""
-        location = f"{self.results_path}:{line_number}"
+        location = f"{path}:{line_number}"
         try:
             line = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -274,6 +309,11 @@ class CollectResult:
     episode_ids: list[str]
     avg_reward: float
     success_rate: float
+    # `num_failed` by outcome: the episodes written to errors.jsonl. An episode
+    # the harness ended after a step returned a reward is in results.jsonl.
+    num_unscored: int = 0
+    num_policy_errors: int = 0
+    num_infra_errors: int = 0
 
 
 class CollectRunner:
@@ -331,7 +371,7 @@ class CollectRunner:
         num_skipped = 0
         num_collected = 0
         num_dropped = 0
-        num_failed = 0
+        failures = {"unscored": 0, "policy_error": 0, "infra_error": 0}
         rewards: list[float] = []
 
         from rich.progress import (
@@ -365,12 +405,14 @@ class CollectRunner:
                     progress.advance(task_id)
                     continue
 
-                session = None
+                session = rollout = verify = None
+                stage = "create"
                 try:
                     session = self._session_factory.create(
                         task=task,
                         episode_id=episode_id,
                     )
+                    stage = "rollout"
                     rollout = self._harness_adapter.run_white_box(
                         model_step=model_step,
                         session=session,
@@ -380,6 +422,7 @@ class CollectRunner:
                         transcript=rollout.messages,
                         final_state=_rollout_final_state(rollout),
                     )
+                    stage = "record"
                     record = EpisodeRecord.from_rollout(
                         episode_id=episode_id,
                         rollout=rollout,
@@ -387,21 +430,33 @@ class CollectRunner:
                         task=task,
                     )
                 except Exception as exc:
-                    num_failed += 1
-                    progress.console.print(
-                        f"[red]failed[/red] {episode_id}: {type(exc).__name__}: {exc}"
+                    # Only an exception from the rollout or verify can be the
+                    # policy's; at "record" the two copies of the reward disagree.
+                    infra = stage != "rollout" or isinstance(exc, _INFRA_ERRORS)
+                    record = EpisodeRecord(
+                        episode_id=episode_id,
+                        messages=[dict(m) for m in rollout.messages] if rollout else [],
+                        reward=None,
+                        done=bool(rollout and verify and (rollout.done or verify.done)),
+                        tool_trace=_tool_trace_to_plain(rollout) if rollout else [],
+                        metrics=dict(rollout.metrics) if rollout else {},
+                        verify_metrics=dict(verify.metrics) if verify else {},
+                        artifacts=dict(verify.artifacts) if verify else {},
+                        task=task,
+                        outcome="infra_error" if infra else "policy_error",
+                        error=f"{type(exc).__name__}: {exc}",
                     )
-                    progress.advance(task_id)
-                    continue
                 finally:
                     if session is not None:
                         session.close()
 
                 # results.jsonl holds only episodes with a reward.
                 if record.reward is None:
-                    num_failed += 1
+                    self._serializer.write_error(record)
+                    failures[record.outcome] += 1
                     progress.console.print(
-                        f"[red]failed[/red] {episode_id}: {record.outcome}, no reward"
+                        f"[red]failed[/red] {episode_id}: {record.outcome}: "
+                        f"{record.error or 'no reward'}"
                     )
                     progress.advance(task_id)
                     continue
@@ -428,29 +483,33 @@ class CollectRunner:
             num_collected=num_collected,
             num_skipped=num_skipped,
             num_dropped=num_dropped,
-            num_failed=num_failed,
+            num_failed=sum(failures.values()),
             episode_ids=planned_ids,
             avg_reward=avg_reward,
             success_rate=success_rate,
+            num_unscored=failures["unscored"],
+            num_policy_errors=failures["policy_error"],
+            num_infra_errors=failures["infra_error"],
         )
 
     def _reset_results_file(self) -> None:
-        if self._serializer.results_path.exists():
-            results_path = self._serializer.results_path
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            backup_path = results_path.with_name(
-                f"{results_path.stem}.{timestamp}.bak{results_path.suffix}"
-            )
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        for kind, path in (
+            ("results", self._serializer.results_path),
+            ("errors", self._serializer.errors_path),
+        ):
+            if not path.exists():
+                continue
+            backup_path = path.with_name(f"{path.stem}.{timestamp}.bak{path.suffix}")
             counter = 1
             while backup_path.exists():
-                backup_path = results_path.with_name(
-                    f"{results_path.stem}.{timestamp}.{counter}.bak"
-                    f"{results_path.suffix}"
+                backup_path = path.with_name(
+                    f"{path.stem}.{timestamp}.{counter}.bak{path.suffix}"
                 )
                 counter += 1
-            results_path.replace(backup_path)
+            path.replace(backup_path)
             warnings.warn(
-                f"resume=False moved existing results file to {backup_path}",
+                f"resume=False moved existing {kind} file to {backup_path}",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -599,6 +658,10 @@ def build_dataset_readme(output_dir: Path) -> str:
             "- `metrics`, `verify_metrics`, `artifacts`",
             "- `task`, `extra` (optional call-site annotations)",
             "",
+            "Episodes without a reward are in `errors.jsonl`, with the same fields: "
+            "`reward` null, `outcome` `unscored`, `policy_error` or `infra_error`, "
+            "and `error` for an exception.",
+            "",
             "## Load",
             "",
             "```python",
@@ -622,8 +685,9 @@ def push_to_hf_hub(
 ) -> str:
     """Upload a collected rollout directory to the Hugging Face Hub as a dataset.
 
-    Uploads ``results.jsonl``, ``metadata.json`` (if present), and an
-    auto-generated ``README.md`` whose YAML front-matter tells the HF
+    Uploads ``results.jsonl``, ``errors.jsonl`` and ``metadata.json`` (if
+    present), and an auto-generated ``README.md`` whose YAML front-matter
+    tells the HF
     Dataset Viewer to treat ``results.jsonl`` as the sole dataset file.
     Consumers load the result with ``load_dataset("<user>/<repo>",
     split="train")``.
@@ -694,6 +758,7 @@ __all__ = [
     "EpisodeRecord",
     "push_to_hf_hub",
     "RolloutSerializer",
+    "ERRORS_FILENAME",
     "METADATA_FILENAME",
     "README_FILENAME",
     "RESULTS_FILENAME",
