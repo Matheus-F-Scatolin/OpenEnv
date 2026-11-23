@@ -431,7 +431,8 @@ openenv skills add --dest /path/to/my-agent/skills/
 ## `openenv collect`
 
 Collect rollouts from a running environment with a teacher model and write
-them as an SFT-ready `results.jsonl`. The teacher can be a hosted provider
+them as an SFT-ready `results.jsonl`; episodes without a reward go to
+`errors.jsonl`, with how each one ended. The teacher can be a hosted provider
 (`--provider openai|anthropic`) or any self-hosted OpenAI-compatible server
 such as vLLM, TGI or Ollama via `--llm-endpoint`.
 

@@ -686,9 +686,8 @@ def push_to_hf_hub(
     """Upload a collected rollout directory to the Hugging Face Hub as a dataset.
 
     Uploads ``results.jsonl``, ``errors.jsonl`` and ``metadata.json`` (if
-    present), and an auto-generated ``README.md`` whose YAML front-matter
-    tells the HF
-    Dataset Viewer to treat ``results.jsonl`` as the sole dataset file.
+    present), and an auto-generated ``README.md`` whose YAML front-matter tells
+    the HF Dataset Viewer to treat ``results.jsonl`` as the sole dataset file.
     Consumers load the result with ``load_dataset("<user>/<repo>",
     split="train")``.
 

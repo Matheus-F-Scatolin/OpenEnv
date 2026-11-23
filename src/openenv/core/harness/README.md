@@ -100,7 +100,7 @@ and `reward` null. Its `outcome` says why:
 | --- | --- |
 | `unscored` | The environment ended the episode with no reward, even when an earlier step returned one |
 | `policy_error` | The harness ended it before any step returned a reward, or the rollout raised an exception the policy can cause (an unparsable tool call, an unknown tool, a 400 from the model endpoint such as the context length, a server error frame, an environment step timeout) |
-| `infra_error` | A failure the policy cannot cause: the session could not be created; the connection to the environment was lost; the model endpoint failed to connect or timed out, or answered 401, 403, 404, 429 or 5xx; or `verify()` forwarded a reward that disagrees with the tool trace |
+| `infra_error` | A failure the policy cannot cause: the session could not be created; the connection to the environment was lost; the model endpoint failed to connect or timed out, or answered 401, 403, 404, 429 or 5xx, as the `openai` client raises them (the same failures from the Anthropic client count as `policy_error`); or `verify()` forwarded a reward that disagrees with the tool trace |
 
 An exception record keeps the transcript when the rollout finished. These
 episodes count in `CollectResult.num_failed`, split into `num_unscored`,

@@ -245,7 +245,7 @@ def collect(
         typer.Option(
             "--output-dir",
             "-o",
-            help="Directory to write results.jsonl + metadata.json.",
+            help="Directory to write results.jsonl, errors.jsonl and metadata.json.",
         ),
     ],
     num_episodes: Annotated[
