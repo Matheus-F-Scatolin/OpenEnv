@@ -89,7 +89,7 @@ The loop keeps the rules of RFC 013:
 
 ### On Apple Silicon with MLX
 
-`train_mlx.py` trains a model with LoRA adapters on MLX on the tasks of a `reasoning_gym_env` server, and evaluates it on the server's `test` split with `EnvEvalHarness` while it trains. The environment must implement the Task API with difficulty levels, and its session factory must pass each task's `split` and `index`, with the seed, to `reset()`. The script needs `mlx-lm`; evaluation turns each plain-text reply into the `answer` tool call with `reasoning_gym_env.harness.text_answer_model_step`, and training reads replies by the same rule.
+`train_mlx.py` trains a model with LoRA adapters on MLX on the tasks of a `reasoning_gym_env` server, and evaluates it on the server's `test` split with `EnvEvalHarness` while it trains. The environment must implement the Task API with difficulty levels, and its session factory must pass each task's `split` and `index`, with the seed, to `reset()`. The script needs `mlx-lm` (checked with `mlx` 0.32.2 and `mlx-lm` 0.31.3); evaluation turns each plain-text reply into the `answer` tool call with `reasoning_gym_env.harness.text_answer_model_step`, and training reads replies by the same rule.
 
 ```bash
 # Terminal 1, from envs/: the environment server

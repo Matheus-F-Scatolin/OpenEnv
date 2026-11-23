@@ -109,13 +109,12 @@ class MlxPolicy:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": question},
         ]
-        encoded = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_dict=True,
-            date_string=PROMPT_DATE,
+        # mlx_lm's tokenizer wrapper returns the token ids as a list.
+        return list(
+            self.tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, date_string=PROMPT_DATE
+            )
         )
-        return list(encoded["input_ids"])
 
     def generate(
         self, prompts: list[list[int]], max_tokens: int, temperature: float
