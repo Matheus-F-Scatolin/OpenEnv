@@ -70,6 +70,7 @@ class TestTextAnswerModelStep:
             ("<answer>1</answer> no, <answer>2</answer>", "2"),
             ("<answer>1</answer> then <answer>2", "1"),
             ("<answer>a <answer>b</answer>", "b"),
+            ("<answer>7</answer> so the final </answer>", "7"),
             ("  42\n", "42"),
             ("<answer>42", "<answer>42"),
             ("", ""),

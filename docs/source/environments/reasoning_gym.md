@@ -265,7 +265,7 @@ model_step = text_answer_model_step(
 )
 ```
 
-Use it to evaluate a model, not to collect fine-tuning data: the transcript then holds a tool call that the model did not write.
+A reply without the tags is submitted whole, so a dataset that compares answers exactly gives it at most partial credit: ask for the tags in the prompt. The step serves evaluation and training alike, since the environment scores what the model wrote; do not build supervised fine-tuning data from its transcripts, which hold a tool call that the model did not write.
 
 ## Development & Testing
 
