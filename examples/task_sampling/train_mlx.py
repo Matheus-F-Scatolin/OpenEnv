@@ -10,8 +10,8 @@ Start a `reasoning_gym_env` server that serves the Task API, then, from this fol
         --out runs/curriculum-seed0
 
 The folder gets `config.json`, `train.jsonl` (one record per step), `evals.jsonl`
-(one record per evaluation, with the sampler's counters) and, at the end,
-`adapters.safetensors`.
+(one record per evaluation, with the sampler's counters), `evals/run-NNNN/` (the
+episodes of each evaluation) and, at the end, `adapters.safetensors`.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from openenv.core.llm_client import LLMResponse
 from openenv.core.task_api_client import TaskAPIClient
 from openenv.core.task_sampler import UniformSampler
 from reasoning_gym_env import ReasoningGymEnv
-from reasoning_gym_env.harness import ReasoningGymSessionFactory, text_answer_model_step
-from reasoning_gym_tasks import ReasoningGymTasks
+from reasoning_gym_env.harness import ReasoningGymSessionFactory
+from reasoning_gym_tasks import chain_sum_model_step, ReasoningGymTasks
 from training_loop import Completion, train
 
 SYSTEM_PROMPT = (
@@ -271,7 +271,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
         MCPHarnessAdapter(),
         test_tasks,
-        model_step=text_answer_model_step(policy.model_step),
+        model_step=chain_sum_model_step(policy.model_step),
+        output_dir=args.out / "evals",
     )
     config = EvalConfig(
         harness_name=harness.name,

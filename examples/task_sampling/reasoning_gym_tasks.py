@@ -7,20 +7,29 @@ that serves the Task API.
 
 from __future__ import annotations
 
+import dataclasses
+import re
 from collections.abc import Mapping
 from typing import Any
 
+from openenv.core.harness import ModelStep, ModelStepResult
+from openenv.core.llm_client import ToolCall
 from reasoning_gym_env import ReasoningGymAction, ReasoningGymEnv
+
+_ANSWER = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.DOTALL)
+_BOXED = re.compile(r"\\boxed\{\s*([^{}]*?)\s*\}")
+_NUMBER = re.compile(r"-?\d[\d,]*")
 
 
 def answer_from_reply(reply: str) -> str:
     """
-    Return the answer a reply gives.
+    Return the answer a reply gives to a chain-sum question.
 
-    It is the content of the reply's last complete `<answer>...</answer>` block, or
-    the whole reply when there is none, without surrounding whitespace: the rule of
-    `reasoning_gym_env.harness.text_answer_model_step`, so that training and
-    evaluation read a reply the same way.
+    It is the content of the reply's last `<answer>...</answer>` block, else of its
+    last `\\boxed{...}`, else its last number, without thousands separators, or an
+    empty string when there is none. The rule is lenient on purpose: a small model
+    that has not learned to write the tags is still scored on its sum. Training and
+    evaluation both read replies with it.
 
     Args:
         reply (`str`):
@@ -29,9 +38,43 @@ def answer_from_reply(reply: str) -> str:
     Returns:
         `str`: The answer to submit.
     """
-    before, _, _ = reply.rpartition("</answer>")
-    _, opening, inside = before.rpartition("<answer>")
-    return (inside if opening else reply).strip()
+    for pattern in (_ANSWER, _BOXED, _NUMBER):
+        found = pattern.findall(reply)
+        if found:
+            return found[-1].replace(",", "").strip()
+    return ""
+
+
+def chain_sum_model_step(model_step: ModelStep) -> ModelStep:
+    """
+    Wrap a model step so that a reply in plain text is submitted as its answer.
+
+    A reply that calls a tool is left unchanged. To any other reply the step adds
+    one call to the environment's `answer` tool, with what `answer_from_reply` reads
+    in it, so that evaluation reads a reply as training does. The environment scores
+    the answer; this step scores nothing.
+
+    Args:
+        model_step (`ModelStep`):
+            The model step to wrap.
+
+    Returns:
+        `ModelStep`: The wrapped step.
+    """
+
+    def step(
+        messages: list[dict[str, Any]], tools: list[Any], sampling: dict[str, Any]
+    ) -> ModelStepResult:
+        result = model_step(messages, tools, sampling)
+        if result.response.tool_calls:
+            return result
+        answer = answer_from_reply(result.response.content)
+        call = ToolCall(id="text-answer", name="answer", args={"answer": answer})
+        return dataclasses.replace(
+            result, response=dataclasses.replace(result.response, tool_calls=[call])
+        )
+
+    return step
 
 
 class ReasoningGymTasks:
@@ -73,4 +116,4 @@ class ReasoningGymTasks:
         self._client.close()
 
 
-__all__ = ["answer_from_reply", "ReasoningGymTasks"]
+__all__ = ["answer_from_reply", "chain_sum_model_step", "ReasoningGymTasks"]

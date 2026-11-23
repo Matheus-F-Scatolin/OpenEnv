@@ -14,9 +14,8 @@ from typing import Any
 import pytest
 from openenv.core.evals import EvalConfig, EvalHarness, EvalSchedule
 from openenv.core.harness import ModelStepResult
-from openenv.core.llm_client import LLMResponse
+from openenv.core.llm_client import LLMResponse, ToolCall
 from openenv.core.task_sampler import SequentialSampler, UniformSampler
-from reasoning_gym_env.harness import text_answer_model_step
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "task_sampling"
 
@@ -175,6 +174,38 @@ class TestTrain:
             ]
         ]
 
+    def test_sampler_gets_raw_rewards_in_batch_order_before_the_step(self) -> None:
+        events: list[tuple[Any, ...]] = []
+
+        class RecordingSampler(SequentialSampler):
+            def sample(self, n: int) -> list[Any]:
+                batch = super().sample(n)
+                events.append(("sample", [task["id"] for task in batch]))
+                return batch
+
+            def update(self, task: Any, rewards: Any, costs: Any = None) -> None:
+                events.append(("update", task["id"], list(rewards), list(costs)))
+                super().update(task, rewards, costs)
+
+        class RecordingPolicy(FakePolicy):
+            def update(self, samples: Any) -> float:
+                events.append(("step",))
+                return super().update(samples)
+
+        policy = RecordingPolicy(
+            {"question a": ["4", "?", "1"], "question b": ["1", "4", "?"]}
+        )
+        sampler = RecordingSampler(tasks("a", "b"))
+
+        train(policy, sampler, steps=1, prompts_per_step=2, group_size=3)
+
+        assert events == [
+            ("sample", ["a", "b"]),
+            ("update", "a", [1.0, None, 0.0], [2, 2, 2]),
+            ("update", "b", [0.0, 1.0, None], [2, 2, 2]),
+            ("step",),
+        ]
+
     def test_no_step_without_signal(self) -> None:
         policy = FakePolicy({"question a": ["4"], "question b": ["4", "?"]})
         sampler = UniformSampler(tasks("a", "b"), rng_seed=0)
@@ -247,26 +278,53 @@ class TestSchedule:
 
 class TestReasoningGymTasks:
     @pytest.mark.parametrize(
-        "reply",
+        ("reply", "answer"),
         [
-            "<answer>42</answer>",
-            "first <answer> 7 </answer> then <answer>8</answer> done",
-            "no tags at all: 13 ",
-            "<answer>open but not closed",
-            "</answer> closed first <answer>5",
-            "",
+            ("4 + 7 = 11", "11"),
+            ("5 + 9 = 14\n14 + 7 = 21", "21"),
+            ("so <answer> 42 </answer> check: 3", "42"),
+            ("<answer>1</answer> no, <answer>2</answer>", "2"),
+            ("<answer>7</answer> so the final </answer>", "7"),
+            ("the sum is \\boxed{-5}, not 4", "-5"),
+            ("<answer>1,234</answer>", "1234"),
+            ("12,345 is the total", "12345"),
+            ("-582 + 489 = -93", "-93"),
+            ("no number here", ""),
+            ("", ""),
         ],
     )
-    def test_reads_a_reply_as_the_evaluation_does(self, reply: str) -> None:
-        step = text_answer_model_step(
+    def test_reads_tags_then_boxed_then_the_last_number(
+        self, reply: str, answer: str
+    ) -> None:
+        assert reasoning_gym_tasks.answer_from_reply(reply) == answer
+
+    @pytest.mark.parametrize("reply", ["4 + 7 = 11", "<answer>3</answer>", "none"])
+    def test_evaluation_submits_what_training_reads(self, reply: str) -> None:
+        step = reasoning_gym_tasks.chain_sum_model_step(
             lambda messages, tools, sampling: ModelStepResult(
-                response=LLMResponse(content=reply)
+                response=LLMResponse(content=reply), completion_ids=[1, 2]
             )
         )
 
-        call = step([], [], {}).response.tool_calls[0]
+        result = step([], [], {})
 
-        assert reasoning_gym_tasks.answer_from_reply(reply) == call.args["answer"]
+        assert result.response.tool_calls == [
+            ToolCall(
+                id="text-answer",
+                name="answer",
+                args={"answer": reasoning_gym_tasks.answer_from_reply(reply)},
+            )
+        ]
+        assert (result.response.content, result.completion_ids) == (reply, [1, 2])
+
+    def test_a_tool_call_is_left_unchanged(self) -> None:
+        call = ToolCall(id="c", name="answer", args={"answer": "9"})
+        original = ModelStepResult(response=LLMResponse(content="", tool_calls=[call]))
+        step = reasoning_gym_tasks.chain_sum_model_step(
+            lambda messages, tools, sampling: original
+        )
+
+        assert step([], [], {}) is original
 
     def test_resets_each_task_and_scores_each_reply(self, monkeypatch) -> None:
         calls: list[tuple[str, Any]] = []
