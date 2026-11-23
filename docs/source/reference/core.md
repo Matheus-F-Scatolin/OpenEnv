@@ -246,6 +246,10 @@ See [Evaluating with Environments](../tutorials/evaluation-inspect) for a worked
 
 [[autodoc]] openenv.core.evals.env_harness.EnvEvalHarness
 
+[[autodoc]] openenv.core.evals.env_harness.EvalComparison
+
+[[autodoc]] openenv.core.evals.env_harness.compare_eval_results
+
 ## Rubrics
 
 [[autodoc]] openenv.core.rubrics.base.Rubric

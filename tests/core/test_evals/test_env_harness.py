@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Tests for EnvEvalHarness."""
+"""Tests for EnvEvalHarness and compare_eval_results."""
 
 from __future__ import annotations
 
@@ -16,7 +16,13 @@ import pydantic
 import pytest
 from openenv.core.env_client import SessionLostError
 from openenv.core.env_server.mcp_types import Tool
-from openenv.core.evals import EnvEvalHarness, EvalConfig, EvalResult
+from openenv.core.evals import (
+    compare_eval_results,
+    EnvEvalHarness,
+    EvalComparison,
+    EvalConfig,
+    EvalResult,
+)
 from openenv.core.harness import (
     MCPHarnessAdapter,
     ModelStepResult,
@@ -877,6 +883,79 @@ class TestReproducibility:
         assert (tmp_path / "run-0000" / "results.jsonl").exists()
 
 
+def _result(per_task: dict[str, str]) -> EvalResult:
+    config = EvalConfig(
+        harness_name="EnvEvalHarness",
+        harness_version="0.1",
+        library_versions={},
+        dataset="fake",
+        eval_parameters={},
+    )
+    return EvalResult(config=config, scores={"per_task": per_task})
+
+
+class TestCompareEvalResults:
+    def test_fixed_regressed_left_out_and_order(self) -> None:
+        before = _result(
+            {
+                "t2": "not_solved",
+                "t10": "solved",
+                "same": "solved",
+                "gone": "solved",
+                "was_out": "left_out",
+            }
+        )
+        after = _result(
+            {
+                "t10": "not_solved",
+                "t2": "solved",
+                "same": "solved",
+                "was_out": "solved",
+                "new": "not_solved",
+            }
+        )
+        diff = compare_eval_results(before, after)
+        assert diff == EvalComparison(
+            fixed=["t2"], regressed=["t10"], left_out=["gone", "was_out", "new"]
+        )
+
+    @pytest.mark.parametrize("side", ["before", "after"])
+    def test_missing_per_task_raises(self, side: str) -> None:
+        inspect_like = EvalResult(config=_result({}).config, scores={"accuracy": 0.5})
+        pair = {"before": _result({}), "after": _result({}), side: inspect_like}
+        with pytest.raises(ValueError, match=side):
+            compare_eval_results(pair["before"], pair["after"])
+
+    def test_works_on_results_parsed_from_json(self) -> None:
+        tasks = [task("t0"), task("t1"), task("t2", steps=[(None, True)])]
+        config = EvalConfig(
+            harness_name="EnvEvalHarness",
+            harness_version="0.1",
+            library_versions={},
+            dataset="fake",
+            eval_parameters={},
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            before = harness(tasks, Policy({"t0": "4", "t1": "5", "t2": "4"}))[
+                0
+            ].run_from_config(config)
+            after = harness(tasks, Policy({"t0": "5", "t1": "4", "t2": "4"}))[
+                0
+            ].run_from_config(config)
+        parsed = [
+            EvalResult.model_validate_json(r.model_dump_json()) for r in (before, after)
+        ]
+        expected = EvalComparison(fixed=["t1"], regressed=["t0"], left_out=["t2"])
+        assert compare_eval_results(before, after) == expected
+        assert compare_eval_results(*parsed) == expected
+
+
 class TestExports:
     def test_package_exports(self) -> None:
-        from openenv.core.evals import EnvEvalHarness, InspectAIHarness  # noqa: F401
+        from openenv.core.evals import (  # noqa: F401
+            compare_eval_results,
+            EnvEvalHarness,
+            EvalComparison,
+            InspectAIHarness,
+        )

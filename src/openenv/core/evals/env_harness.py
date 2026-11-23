@@ -17,6 +17,7 @@ from typing import Any
 
 import openai
 from openenv.core.evals.base import EvalHarness
+from openenv.core.evals.types import EvalResult
 from openenv.core.harness.collect import (
     _rollout_final_state,
     _tool_trace_to_plain,
@@ -568,6 +569,77 @@ def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+@dataclass(frozen=True)
+class EvalComparison:
+    """
+    The tasks whose outcome changed between two evaluations.
+
+    Attributes:
+        fixed (`list[str]`):
+            Task ids not solved before and solved after.
+        regressed (`list[str]`):
+            Task ids solved before and not solved after.
+        left_out (`list[str]`):
+            Task ids left out of either evaluation, or present in only one of them;
+            they are in neither list above.
+    """
+
+    fixed: list[str]
+    regressed: list[str]
+    left_out: list[str]
+
+
+def compare_eval_results(before: EvalResult, after: EvalResult) -> EvalComparison:
+    """
+    Compare two evaluations of the same tasks, task by task.
+
+    Both results should come from [`EnvEvalHarness`] with the same tasks and
+    parameters; their configs are not compared. Task ids are listed in the order of
+    `before`, then the ids found only in `after`.
+
+    Args:
+        before (`EvalResult`):
+            The earlier evaluation, for example of the previous checkpoint.
+        after (`EvalResult`):
+            The later evaluation.
+
+    Returns:
+        [`EvalComparison`]: The fixed, regressed and left-out task ids.
+
+    Raises:
+        `ValueError`: If either result has no `per_task` scores.
+
+    Examples:
+
+    ```python
+    diff = compare_eval_results(step0, step1000)
+    diff.fixed, diff.regressed, diff.left_out
+    ```
+    """
+    tables = {}
+    for side, result in (("before", before), ("after", after)):
+        per_task = result.scores.get("per_task")
+        if not isinstance(per_task, dict):
+            raise ValueError(f"{side} has no per_task scores")
+        tables[side] = per_task
+    old, new = tables["before"], tables["after"]
+    fixed: list[str] = []
+    regressed: list[str] = []
+    left_out: list[str] = []
+    for task_id in [*old, *(task_id for task_id in new if task_id not in old)]:
+        was = old.get(task_id, "left_out")
+        now = new.get(task_id, "left_out")
+        if "left_out" in (was, now):
+            left_out.append(task_id)
+        elif was == "not_solved" and now == "solved":
+            fixed.append(task_id)
+        elif was == "solved" and now == "not_solved":
+            regressed.append(task_id)
+    return EvalComparison(fixed=fixed, regressed=regressed, left_out=left_out)
+
+
 __all__ = [
+    "compare_eval_results",
     "EnvEvalHarness",
+    "EvalComparison",
 ]
