@@ -92,6 +92,25 @@ class ReasoningGymSessionFactory(ResourceSessionFactory):
         seed: int | None = None,
         episode_id: str | None = None,
     ) -> StepEnvSessionAdapter:
+        """
+        Start a session for one episode.
+
+        A task spec with `split` and `index`, as the environment's Task API serves
+        it, is started with `reset(split=..., index=..., seed=...)`. Any other task
+        starts a one-question dataset of the factory's dataset, with a random seed
+        when none is given.
+
+        Args:
+            task (`Any`, *optional*):
+                The task spec.
+            seed (`int`, *optional*):
+                Seed of the reset.
+            episode_id (`str`, *optional*):
+                Id of the episode.
+
+        Returns:
+            `StepEnvSessionAdapter`: The session.
+        """
         client = self._client_factory()
         if isinstance(task, Mapping) and "split" in task and "index" in task:
             reset_kwargs = {"split": task["split"], "index": task["index"]}
