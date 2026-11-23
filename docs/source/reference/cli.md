@@ -464,7 +464,8 @@ implement the [Task API](../guides/task-api), and its session factory must pass
 each task's `split` and `index`, with the seed, to `reset()`. The tasks come from
 the server, so the variant in the env spec does not choose them. The model is
 reached through an OpenAI-compatible endpoint, with the same URL rules as
-`openenv collect`.
+`openenv collect`. The endpoint must answer with a tool call: a reply in plain
+text ends its episode without a score, and counts in `error_rate`.
 
 ```bash
 openenv eval reasoning_gym:chain_sum --base-url http://localhost:8001 \

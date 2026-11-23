@@ -128,6 +128,9 @@ def evaluate(
     outcome changed since an earlier result are printed, as
     [`~openenv.core.evals.compare_eval_results`] lists them.
     """
+    if not llm_endpoint:
+        # Collect's client builder would fall back to hosted OpenAI.
+        raise typer.BadParameter("must not be empty.", param_hint="--llm-endpoint")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise typer.BadParameter(
             f"{output_dir} is not empty; use a new directory.",
@@ -220,3 +223,6 @@ def evaluate(
             ("left_out", diff.left_out),
         ):
             console.print(f"{name} ({len(ids)}): {', '.join(ids) or '-'}", markup=False)
+
+
+__all__ = ["evaluate"]

@@ -356,6 +356,19 @@ class TestEvalCommand:
 
 
 class TestUsageErrors:
+    def test_empty_llm_endpoint(
+        self, tmp_path: Path, task_api, llm, factory: FakeFactory
+    ) -> None:
+        out = tmp_path / "out"
+
+        result, output = invoke(out, llm_endpoint="")
+
+        assert result.exit_code == 2, result.output
+        assert "--llm-endpoint" in output
+        assert not out.exists()
+        assert factory.calls == []
+        assert llm.requests == []
+
     def test_unknown_split(
         self, tmp_path: Path, task_api, llm, factory: FakeFactory
     ) -> None:
