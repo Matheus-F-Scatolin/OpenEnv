@@ -88,12 +88,32 @@ class EpisodeRecord:
         extra: dict[str, Any] | None = None,
         seed: int | None = None,
     ) -> "EpisodeRecord":
-        """Build a record from a harness rollout and its verification.
+        """
+        Build a record from a harness rollout and its verification.
 
-        Uses ``_resolve_env_reward`` so that any disagreement between the
-        reward emitted inside the environment and the one forwarded by
-        ``verify()`` raises — preserving the "rewards in env" invariant.
-        ``seed`` is the seed the episode's session was created with, if any.
+        The reward is read with `_resolve_env_reward`, so a disagreement between the
+        reward emitted inside the environment and the one forwarded by `verify()`
+        raises: the reward stays the environment's.
+
+        Args:
+            episode_id (`str`):
+                Id of the episode.
+            rollout (`HarnessRolloutResult`):
+                The harness rollout.
+            verify (`VerifyResult`):
+                The session's verification of the rollout.
+            task (`Any`, *optional*):
+                The task spec the episode ran.
+            extra (`dict[str, Any]`, *optional*):
+                Extra fields to keep in the record.
+            seed (`int`, *optional*):
+                The seed the episode's session was created with.
+
+        Returns:
+            `EpisodeRecord`: The record.
+
+        Raises:
+            `ValueError`: If the two rewards disagree, or the environment gave none.
         """
         reward = _resolve_env_reward(rollout, verify)
         return cls(
@@ -240,15 +260,29 @@ class CollectResult:
 
 
 class CollectRunner:
-    """Drive repeated rollouts into an append-only JSONL dataset.
+    """
+    Drive repeated rollouts into an append-only JSONL dataset.
 
-    Resume state lives on disk via the ``RolloutSerializer``. Episode ``i`` gets
-    the ``i``-th task and the ``i``-th seed, which the session factory receives;
-    an episode past the end of ``tasks`` or ``seeds`` gets None. Repeatable
-    iterables, such as lists and tuples, restart at the first item on each
-    ``run()`` so tasks and seeds stay aligned with episode ids. One-shot
-    iterators work for one run; reusing them raises ``ValueError`` before
-    accessing results.
+    Resume state lives on disk via the `RolloutSerializer`. Episode `i` gets the
+    `i`-th task and the `i`-th seed, which the session factory receives; an episode
+    past the end of `tasks` or `seeds` gets None. Repeatable iterables, such as lists
+    and tuples, restart at the first item on each `run()` so tasks and seeds stay
+    aligned with episode ids. One-shot iterators work for one run; reusing them
+    raises `ValueError` before accessing results.
+
+    Args:
+        session_factory (`ResourceSessionFactory`):
+            Creates one session per episode from its task and seed.
+        harness_adapter (`HarnessAdapter`):
+            Runs each episode.
+        serializer (`RolloutSerializer`):
+            Writes the records and holds the resume state.
+        tasks (`Iterable[Any]`, *optional*):
+            Task specs, one per episode, in order.
+        seeds (`Iterable[int]`, *optional*):
+            Seeds, one per episode, aligned with `tasks`.
+        limits (`HarnessRunLimits`, *optional*):
+            Turn limit and sampling settings of each episode.
     """
 
     def __init__(
