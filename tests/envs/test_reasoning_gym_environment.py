@@ -495,10 +495,6 @@ class TestReasoningGymIntegration:
         assert env.state.step_count == 0
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 class TestTaskAPI:
     def test_discovery_on_fresh_instance_has_no_side_effects(self) -> None:
         env = ReasoningGymEnvironment()
@@ -531,6 +527,39 @@ class TestTaskAPI:
     def test_unknown_split(self) -> None:
         with pytest.raises(ValueError):
             ReasoningGymEnvironment().num_tasks("missing")
+
+    @pytest.mark.parametrize("index", [-1, 0, 5000])
+    def test_unknown_split_wins_over_the_index(self, index: int) -> None:
+        with pytest.raises(ValueError):
+            ReasoningGymEnvironment().get_task("missing", index)
+
+    def test_indexed_reset_after_a_scored_answer(self) -> None:
+        env = ReasoningGymEnvironment()
+        env.reset(split="test", index=3, seed=0)
+        answer = env._current_entry["answer"]
+        assert env.step(ReasoningGymAction(answer="wrong")).reward == 0.0
+        assert env.step(ReasoningGymAction(answer=answer)).reward == 0.0
+        env.reset(split="test", index=3, seed=0)
+        assert env.step(ReasoningGymAction(answer=answer)).reward == 1.0
+
+    @pytest.mark.parametrize(
+        "split,index,error",
+        [
+            ("test", 1000, IndexError),
+            ("test", -1, IndexError),
+            ("missing", 0, ValueError),
+            ("missing", -1, ValueError),
+        ],
+    )
+    def test_invalid_selection_leaves_state(
+        self, split: str, index: int, error: type[Exception]
+    ) -> None:
+        env = ReasoningGymEnvironment()
+        env.reset(split="test", index=3, seed=0, episode_id="kept")
+        before = (env.state.model_dump(), env._current_entry, env._dataset)
+        with pytest.raises(error):
+            env.reset(split=split, index=index, seed=0)
+        assert (env.state.model_dump(), env._current_entry, env._dataset) == before
 
     @pytest.mark.parametrize("index", range(10))
     @pytest.mark.parametrize("split,offset", [("train", 0), ("test", 500000000)])
@@ -621,3 +650,7 @@ class TestTaskAPI:
                 .reset(split="test", index=3, seed=0)
                 .question
             )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

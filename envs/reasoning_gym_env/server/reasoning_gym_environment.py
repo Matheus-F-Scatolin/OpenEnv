@@ -144,7 +144,8 @@ class ReasoningGymEnvironment(Environment):
             `ValueError`: If the split is unknown.
             `IndexError`: If the index is outside the split.
         """
-        if not 0 <= index < self.num_tasks(split):
+        n = self.num_tasks(split)
+        if not 0 <= index < n:
             raise IndexError(index)
         return {
             "id": f"chain_sum-{split}-{index}",
@@ -207,38 +208,45 @@ class ReasoningGymEnvironment(Environment):
         index: int | None = None,
     ) -> ReasoningGymObservation:
         """
-        Reset the environment and get the next question.
+        Reset the environment and return the next question.
 
-        If no parameters are provided and no dataset exists, creates a default 'leg_counting' dataset
+        Without `index`, the dataset options build a new dataset; without them, the
+        current dataset is reused, or a default `leg_counting` dataset (fixed seed
+        and size) is created when there is none. With `index`, the question is the
+        chain-sum task at that position of `split`.
 
         Args:
-            dataset_name: Name of dataset (e.g., 'leg_counting', 'composite').
-                         If None and dataset exists, reuses existing dataset.
-                         If None and no dataset exists, creates default 'leg_counting'.
-            dataset_config: For non-composite datasets, config dict with task-specific params.
-                          Required if dataset_name is provided and not 'composite'.
-            dataset_specs: For composite datasets, list of dicts defining structure.
-                          Required if dataset_name is 'composite'.
-            seed: Random seed for dataset generation.
-                 Required if dataset_name is provided.
-                 Defaults to 42 when creating default dataset.
-            size: Number of questions in dataset.
-                 Required if dataset_name is provided.
-                 Defaults to 100 when creating default dataset.
-            episode_id: Optional episode ID
+            dataset_name (`str`, *optional*):
+                Name of a reasoning_gym dataset, such as `"leg_counting"`, or
+                `"composite"`.
+            dataset_config (`Dict[str, Any]`, *optional*):
+                Options of a dataset that is not composite.
+            dataset_specs (`List[Dict[str, Any]]`, *optional*):
+                The datasets of a composite dataset; required when `dataset_name` is
+                `"composite"`.
+            seed (`int`, *optional*):
+                Seed of the new dataset; required with `dataset_name`. With `index`,
+                it picks a variant of the task.
+            size (`int`, *optional*):
+                Number of questions of the new dataset; required with
+                `dataset_name`.
+            episode_id (`str`, *optional*):
+                Id of the episode; a new one is generated without it.
             split (`str`, *optional*, defaults to `"train"`):
                 Split of the selected chain-sum task; used only with `index`.
             index (`int`, *optional*):
                 Task position. Selects a chain-sum level and question, using
                 `(seed or 0) * 1_000_000_000 + split_offset + index`. Cannot be
-                combined with dataset options. Without it, dataset reuse and
-                configuration follow the existing behavior.
+                combined with dataset options.
 
         Returns:
-            ReasoningGymObservation with question and metadata
+            `ReasoningGymObservation`: The question, not done and not scored.
 
         Raises:
-            ValueError: If parameters are invalid or missing
+            `ValueError`: If `index` comes with dataset options or an unknown split,
+                if `seed` or `size` is missing with `dataset_name`, or if a
+                composite dataset has no specs.
+            `IndexError`: If `index` is outside the split.
         """
         if index is not None:
             if any(
