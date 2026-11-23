@@ -82,7 +82,7 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | --- | --- | --- |
 | `episode_id` | string | Stable id for resume (`<prefix>-<index>`) |
 | `messages` | list | Chat transcript (user/assistant/tool). TRL `SFTTrainer`-compatible |
-| `reward` | float | Env reward (derived via `_resolve_env_reward`, never synthesized) |
+| `reward` | float | Env reward: the last one in the tool trace, else the one `verify()` forwards; never synthesized |
 | `done` | bool | Whether the episode terminated |
 | `tool_trace` | list | Structured tool calls with args & results |
 | `metrics` | struct | Harness-level metrics (turns, tool_calls) |
@@ -90,6 +90,21 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `artifacts` | struct | Verification artifacts (final state, etc.) |
 | `task` | any | Optional task spec passed by `CollectRunner.tasks` |
 | `extra` | struct | Free-form annotations supplied by the caller |
+| `outcome` | string | `scored`: the environment ended the episode with a reward. `policy_error`: the harness ended it (no tool call, a turn or tool-call limit) after a step returned `reward` |
+| `error` | string or null | `<Type>: <message>` of the exception that ended the episode (`errors.jsonl` only) |
+
+`errors.jsonl` — one record per episode without a reward, with the same fields
+and `reward` null. Its `outcome` says why:
+
+| outcome | when |
+| --- | --- |
+| `unscored` | The environment ended the episode with no reward, even when an earlier step returned one |
+| `policy_error` | The harness ended it before any step returned a reward, or the rollout raised an exception the policy can cause (an unparsable tool call, an unknown tool, a 400 from the model endpoint such as the context length, a server error frame, an environment step timeout) |
+| `infra_error` | A failure the policy cannot cause: the session could not be created; the connection to the environment was lost; the model endpoint failed to connect or timed out, or answered 401, 403, 404, 429 or 5xx, as the `openai` client raises them (the same failures from the Anthropic client count as `policy_error`); or `verify()` forwarded a reward that disagrees with the tool trace |
+
+An exception record keeps the transcript when the rollout finished. These
+episodes count in `CollectResult.num_failed`, split into `num_unscored`,
+`num_policy_errors` and `num_infra_errors`.
 
 `metadata.json` — run-level info (env, model, n, temperature, filter flags).
 
@@ -101,14 +116,19 @@ HF Dataset Viewer renders `results.jsonl` as `split=train`.
 - **Thin envs** — `OpenSpielSessionFactory` and friends live in the env package
   (`envs/<env>/harness.py`) and wrap the existing `EnvClient`. The collector
   treats the env as a black box.
-- **Rewards in env** — `EpisodeRecord.from_rollout` reuses the runtime's
-  `_resolve_env_reward` so any mismatch between the reward emitted by a tool
-  result and the one forwarded by `session.verify()` raises immediately.
+- **Rewards in env** — `EpisodeRecord.from_rollout` reads the reward as the
+  runtime's `_resolve_env_reward` does, so any mismatch between the reward
+  emitted by a tool result and the one forwarded by `session.verify()` raises
+  immediately, except that an episode the environment ended with no reward on
+  its final step keeps the reward None. A missing reward is never filled in.
 - **Provider-agnostic teacher** — `build_model_step` adapts any
   `openenv.core.llm_client.LLMClient` (OpenAI, Anthropic, OpenAI-compatible
   self-hosted endpoints) into a `ModelStep`. No schema code per provider.
 - **Resume** — `RolloutSerializer.collected_episode_ids()` reads prior runs
   from disk; `CollectRunner.run(resume=True)` skips ids already serialized.
+  Only `results.jsonl` counts, so a failed episode is retried and
+  `errors.jsonl` keeps every failed attempt. `resume=False` moves both files
+  aside.
 - **Filtering** — `should_keep` is a `Callable[[EpisodeRecord], bool]`. Defaults
   to keeping everything. The CLI filters `reward >= 0` unless `--keep-losses`
   is set.

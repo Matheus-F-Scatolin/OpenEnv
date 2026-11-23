@@ -12,16 +12,19 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import httpx
+import openai
 import pytest
 from openenv.core.env_server.mcp_types import Tool
 from openenv.core.harness import (
     HarnessAdapter,
     HarnessRolloutResult,
     HarnessRunLimits,
+    MCPHarnessAdapter,
     ModelStep,
     ModelStepResult,
     ResourceSession,
     ResourceSessionFactory,
+    rollout as rollout_module,
     ToolResult,
     ToolTraceEntry,
     VerifyResult,
@@ -37,6 +40,7 @@ from openenv.core.harness.collect import (
     RolloutSerializer,
 )
 from openenv.core.llm_client import LLMClient, LLMResponse, ToolCall
+from websockets.exceptions import ConnectionClosed
 
 
 def _fake_rollout(
@@ -1039,6 +1043,24 @@ class TestPushToHfHub:
 
         assert url == "https://huggingface.co/datasets/user/ttt-sft-v1"
 
+    def test_uploads_results_with_secrets_redacted(self, tmp_path: Path):
+        output = _populated_output_dir(tmp_path)
+        secret = "hf_" + "x" * 34
+        with (output / "results.jsonl").open("a") as f:
+            f.write(json.dumps({"messages": [{"content": f"env: {secret}"}]}) + "\n")
+        uploaded = []
+        mock_api = MagicMock()
+        mock_api.upload_folder.side_effect = lambda **kwargs: uploaded.append(
+            (Path(kwargs["folder_path"]) / "results.jsonl").read_text()
+        )
+
+        with patch("huggingface_hub.HfApi", return_value=mock_api):
+            with pytest.warns(UserWarning, match="Redacted 1 secret"):
+                push_to_hf_hub(output, "user/ds")
+
+        assert secret not in uploaded[0]
+        assert "<REDACTED>" in uploaded[0]
+
     def test_private_flag_propagates(self, tmp_path: Path):
         output = _populated_output_dir(tmp_path)
         mock_api = MagicMock()
@@ -1136,3 +1158,430 @@ class TestBuildDatasetReadme:
 
         assert "OpenEnv rollouts" in readme
         assert "Schema" in readme
+
+
+def _rollout_with_rewards(
+    rewards: list[float | None], *, env_ended: bool = True
+) -> HarnessRolloutResult:
+    """A rollout whose tool results carry `rewards`; the last ends it if `env_ended`."""
+    trace = [
+        ToolTraceEntry(
+            tool_name="play_move",
+            arguments={"cell": i},
+            result=ToolResult(
+                data={"board": "..."},
+                done=env_ended and i == len(rewards) - 1,
+                metadata={"reward": reward},
+            ),
+        )
+        for i, reward in enumerate(rewards)
+    ]
+    return HarnessRolloutResult(
+        messages=[{"role": "user", "content": "play"}],
+        tool_trace=trace,
+        done=env_ended or not rewards,
+        metrics={"turns": len(rewards)},
+    )
+
+
+class _ScriptedSession(ResourceSession):
+    """Its task names how the episode ends: scored, unscored, text or cut."""
+
+    def __init__(self, task: str):
+        self.task = task
+
+    def initial_messages(self) -> list[dict[str, Any]]:
+        return [{"role": "user", "content": self.task}]
+
+    def list_tools(self) -> list[Tool]:
+        return []
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        reward = {"scored": 1.0, "unscored": None, "cut": 0.0}[self.task]
+        return ToolResult(
+            data={"ack": name}, done=self.task != "cut", metadata={"reward": reward}
+        )
+
+    def verify(
+        self,
+        transcript: list[dict[str, Any]],
+        final_state: Any | None = None,
+    ) -> VerifyResult:
+        return VerifyResult(env_reward=1.0 if self.task == "scored" else None)
+
+    def close(self) -> None:
+        pass
+
+
+class _ScriptedFactory(ResourceSessionFactory):
+    def create(
+        self,
+        task: Any,
+        seed: int | None = None,
+        episode_id: str | None = None,
+    ) -> _ScriptedSession:
+        return _ScriptedSession(task)
+
+
+def _move_unless_text_task(
+    messages: list[dict[str, Any]],
+    tools: list[Tool],
+    sampling: dict[str, Any],
+) -> ModelStepResult:
+    if messages[0]["content"] == "text":
+        return ModelStepResult(response=LLMResponse(content="I would play the centre."))
+    move = ToolCall(id="c1", name="play_move", args={"cell": 4})
+    return ModelStepResult(response=LLMResponse(content="", tool_calls=[move]))
+
+
+class TestEpisodeOutcome:
+    def test_environment_ended_with_a_reward_is_scored(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([0.0, 1.0]), VerifyResult(env_reward=1.0)
+        )
+
+        assert (record.reward, record.outcome) == (1.0, "scored")
+
+    def test_environment_ended_without_a_reward_is_unscored(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([None]), VerifyResult(env_reward=None)
+        )
+
+        assert (record.reward, record.outcome) == (None, "unscored")
+
+    def test_earlier_reward_is_not_the_score_of_an_unscored_episode(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([0.0, None]), VerifyResult(env_reward=None)
+        )
+
+        assert (record.reward, record.outcome) == (None, "unscored")
+
+    def test_reward_forwarded_by_verify_is_scored(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([None]), VerifyResult(env_reward=0.5)
+        )
+
+        assert (record.reward, record.outcome) == (0.5, "scored")
+
+    def test_verify_disagreeing_with_an_earlier_step_still_raises(self):
+        with pytest.raises(ValueError, match="must forward the environment reward"):
+            EpisodeRecord.from_rollout(
+                "ep", _rollout_with_rewards([0.0, None]), VerifyResult(env_reward=1.0)
+            )
+
+    def test_text_reply_is_a_policy_error_without_reward(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([]), VerifyResult(env_reward=None)
+        )
+
+        assert (record.reward, record.outcome) == (None, "policy_error")
+
+    def test_harness_cut_keeps_the_last_reward_as_a_policy_error(self):
+        record = EpisodeRecord.from_rollout(
+            "ep",
+            _rollout_with_rewards([0.0, 0.0], env_ended=False),
+            VerifyResult(env_reward=None),
+        )
+
+        assert (record.reward, record.outcome) == (0.0, "policy_error")
+
+    def test_outcome_is_serialized(self):
+        record = EpisodeRecord.from_rollout(
+            "ep", _rollout_with_rewards([None]), VerifyResult(env_reward=None)
+        )
+
+        payload = record.to_dict()
+
+        assert (payload["reward"], payload["outcome"]) == (None, "unscored")
+
+    def test_runner_writes_only_episodes_with_a_reward(self, tmp_path: Path):
+        runner = CollectRunner(
+            session_factory=_ScriptedFactory(),
+            harness_adapter=MCPHarnessAdapter(),
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["scored", "unscored", "text", "cut"],
+            limits=HarnessRunLimits(max_turns=2),
+        )
+
+        result = runner.run(model_step=_move_unless_text_task, num_episodes=4)
+
+        lines = (tmp_path / "results.jsonl").read_text().splitlines()
+        records = [json.loads(line) for line in lines]
+        assert [(r["task"], r["reward"], r["outcome"]) for r in records] == [
+            ("scored", 1.0, "scored"),
+            ("cut", 0.0, "policy_error"),
+        ]
+        assert (result.num_collected, result.num_failed) == (2, 2)
+
+    def test_resolve_env_reward_still_raises_where_the_new_helper_gives_none(self):
+        rollout = _rollout_with_rewards([None])
+        verify = VerifyResult(env_reward=None)
+
+        assert rollout_module._resolve_env_reward_or_none(rollout, verify) is None
+        with pytest.raises(ValueError, match="did not produce an environment reward"):
+            rollout_module._resolve_env_reward(rollout, verify)
+
+    def test_dataset_readme_lists_outcome(self, tmp_path: Path):
+        assert "- `outcome`" in build_dataset_readme(tmp_path)
+
+
+_MODEL_REQUEST = httpx.Request("POST", "http://model/v1/chat/completions")
+
+
+def _status_error(cls: type[openai.APIStatusError], status: int) -> Exception:
+    response = httpx.Response(status, request=_MODEL_REQUEST)
+    return cls(f"status {status}", response=response, body=None)
+
+
+_INFRA_EXCEPTIONS = [
+    ConnectionError("environment connection lost"),
+    ConnectionClosed(rcvd=None, sent=None),
+    openai.APIConnectionError(request=_MODEL_REQUEST),
+    openai.APITimeoutError(request=_MODEL_REQUEST),
+    _status_error(openai.AuthenticationError, 401),
+    _status_error(openai.PermissionDeniedError, 403),
+    _status_error(openai.NotFoundError, 404),
+    _status_error(openai.RateLimitError, 429),
+    _status_error(openai.InternalServerError, 503),
+]
+
+_POLICY_EXCEPTIONS = [
+    json.JSONDecodeError("Expecting value", "{", 1),
+    KeyError("Unknown tool: guess"),
+    _status_error(openai.BadRequestError, 400),
+    TimeoutError("environment step timed out"),
+    RuntimeError("Server error: invalid action"),
+]
+
+
+class _RaisingAdapter(_FakeAdapter):
+    """Raises `exc` for the task "bad"; plays the fake rollout otherwise."""
+
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+    def run_white_box(self, model_step, session, limits=None):
+        if session.task == "bad":
+            raise self.exc
+        return super().run_white_box(model_step, session, limits)
+
+
+class _VerifyFailsSession(_FakeSession):
+    def verify(self, transcript, final_state=None):
+        raise ConnectionError("environment connection lost")
+
+
+class _MismatchSession(_FakeSession):
+    def verify(self, transcript, final_state=None):
+        return VerifyResult(env_reward=0.0, metrics={"step_count": 1})
+
+
+class _SessionClassFactory(_FakeFactory):
+    """Hands out `session_cls` for the task "bad" and fake sessions otherwise."""
+
+    def __init__(self, session_cls: type[_FakeSession]):
+        super().__init__()
+        self.session_cls = session_cls
+
+    def create(self, task, seed=None, episode_id=None):
+        if task != "bad":
+            return super().create(task, seed, episode_id)
+        session = self.session_cls(task=task, reward=1.0)
+        self.sessions.append(session)
+        return session
+
+
+class _ScriptedOrDownFactory(_ScriptedFactory):
+    def create(self, task, seed=None, episode_id=None):
+        if task == "down":
+            raise RuntimeError("no environment server")
+        return super().create(task, seed, episode_id)
+
+
+def _jsonl(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _describe(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+class TestFailureRecords:
+    def _run(
+        self,
+        tmp_path: Path,
+        *,
+        factory: ResourceSessionFactory | None = None,
+        adapter: HarnessAdapter | None = None,
+    ) -> CollectResult:
+        runner = CollectRunner(
+            session_factory=factory or _FakeFactory(),
+            harness_adapter=adapter or _FakeAdapter(),
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["ok", "bad"],
+        )
+        return runner.run(model_step=_noop_model_step, num_episodes=2)
+
+    def test_create_exception_is_an_infra_error(self, tmp_path: Path):
+        class DownFactory(_FakeFactory):
+            def create(self, task, seed=None, episode_id=None):
+                if task == "bad":
+                    raise RuntimeError("no environment server")
+                return super().create(task, seed, episode_id)
+
+        result = self._run(tmp_path, factory=DownFactory())
+
+        [row] = _jsonl(tmp_path / "errors.jsonl")
+        assert row["episode_id"] == "ep-000001"
+        assert row["task"] == "bad"
+        assert row["outcome"] == "infra_error"
+        assert row["error"] == "RuntimeError: no environment server"
+        assert (row["reward"], row["done"], row["messages"]) == (None, False, [])
+        assert [r["task"] for r in _jsonl(tmp_path / "results.jsonl")] == ["ok"]
+        assert (result.num_collected, result.num_failed) == (1, 1)
+        assert result.num_infra_errors == 1
+
+    @pytest.mark.parametrize("exc", _INFRA_EXCEPTIONS, ids=_describe)
+    def test_infrastructure_exception_in_the_rollout(self, tmp_path: Path, exc):
+        result = self._run(tmp_path, adapter=_RaisingAdapter(exc))
+
+        [row] = _jsonl(tmp_path / "errors.jsonl")
+        assert (row["outcome"], row["error"]) == ("infra_error", _describe(exc))
+        assert (result.num_infra_errors, result.num_policy_errors) == (1, 0)
+
+    @pytest.mark.parametrize("exc", _POLICY_EXCEPTIONS, ids=_describe)
+    def test_policy_exception_in_the_rollout(self, tmp_path: Path, exc):
+        result = self._run(tmp_path, adapter=_RaisingAdapter(exc))
+
+        [row] = _jsonl(tmp_path / "errors.jsonl")
+        assert (row["outcome"], row["error"]) == ("policy_error", _describe(exc))
+        assert (result.num_infra_errors, result.num_policy_errors) == (0, 1)
+
+    def test_verify_exception_keeps_the_transcript(self, tmp_path: Path):
+        result = self._run(tmp_path, factory=_SessionClassFactory(_VerifyFailsSession))
+
+        [row] = _jsonl(tmp_path / "errors.jsonl")
+        assert row["outcome"] == "infra_error"
+        assert row["error"] == "ConnectionError: environment connection lost"
+        assert [m["role"] for m in row["messages"]] == ["user", "assistant", "tool"]
+        assert len(row["tool_trace"]) == 1
+        assert (row["reward"], row["done"]) == (None, False)
+        assert result.num_infra_errors == 1
+
+    def test_reward_mismatch_is_an_infra_error(self, tmp_path: Path):
+        result = self._run(tmp_path, factory=_SessionClassFactory(_MismatchSession))
+
+        [row] = _jsonl(tmp_path / "errors.jsonl")
+        assert row["outcome"] == "infra_error"
+        assert row["error"].startswith(
+            "ValueError: verify.env_reward must forward the environment reward"
+        )
+        assert row["reward"] is None
+        assert len(row["messages"]) == 3
+        assert row["verify_metrics"] == {"step_count": 1}
+        assert result.num_infra_errors == 1
+
+    def test_every_failed_episode_is_recorded_and_counted(self, tmp_path: Path):
+        runner = CollectRunner(
+            session_factory=_ScriptedOrDownFactory(),
+            harness_adapter=MCPHarnessAdapter(),
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["scored", "unscored", "text", "cut", "down"],
+            limits=HarnessRunLimits(max_turns=2),
+        )
+
+        result = runner.run(model_step=_move_unless_text_task, num_episodes=5)
+
+        rows = _jsonl(tmp_path / "errors.jsonl")
+        assert [(r["task"], r["outcome"], r["reward"]) for r in rows] == [
+            ("unscored", "unscored", None),
+            ("text", "policy_error", None),
+            ("down", "infra_error", None),
+        ]
+        assert [len(r["messages"]) for r in rows] == [3, 2, 0]
+        assert [r["error"] for r in rows] == [
+            None,
+            None,
+            "RuntimeError: no environment server",
+        ]
+        assert [r["task"] for r in _jsonl(tmp_path / "results.jsonl")] == [
+            "scored",
+            "cut",
+        ]
+        counts = (
+            result.num_unscored,
+            result.num_policy_errors,
+            result.num_infra_errors,
+        )
+        assert counts == (1, 1, 1)
+        assert result.num_failed == sum(counts)
+
+    def test_retried_episode_keeps_its_failed_attempt(self, tmp_path: Path):
+        class FailOnce(_FakeAdapter):
+            failed = False
+
+            def run_white_box(self, model_step, session, limits=None):
+                if session.task == "bad" and not self.failed:
+                    self.failed = True
+                    raise RuntimeError("transient rollout failure")
+                return super().run_white_box(model_step, session, limits)
+
+        runner = CollectRunner(
+            session_factory=_FakeFactory(),
+            harness_adapter=FailOnce(),
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["ok", "bad"],
+        )
+        runner.run(model_step=_noop_model_step, num_episodes=2)
+
+        second = runner.run(model_step=_noop_model_step, num_episodes=2)
+
+        assert (second.num_collected, second.num_failed) == (1, 0)
+        [row] = _jsonl(tmp_path / "errors.jsonl")
+        assert (row["episode_id"], row["outcome"]) == ("ep-000001", "policy_error")
+        results = _jsonl(tmp_path / "results.jsonl")
+        assert [r["episode_id"] for r in results] == ["ep-000000", "ep-000001"]
+
+    def test_no_resume_moves_the_errors_file_aside(self, tmp_path: Path):
+        adapter = _RaisingAdapter(RuntimeError("first run"))
+        self._run(tmp_path, adapter=adapter)
+        adapter.exc = RuntimeError("second run")
+        runner = CollectRunner(
+            session_factory=_FakeFactory(),
+            harness_adapter=adapter,
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["ok", "bad"],
+        )
+
+        with pytest.warns(RuntimeWarning) as caught:
+            runner.run(model_step=_noop_model_step, num_episodes=2, resume=False)
+
+        moved = sorted(str(w.message).split(" file to ")[0] for w in caught)
+        assert moved == [
+            "resume=False moved existing errors",
+            "resume=False moved existing results",
+        ]
+
+        [backup] = tmp_path.glob("errors.*.bak.jsonl")
+        assert [r["error"] for r in _jsonl(backup)] == ["RuntimeError: first run"]
+        rows = _jsonl(tmp_path / "errors.jsonl")
+        assert [r["error"] for r in rows] == ["RuntimeError: second run"]
+
+    def test_errors_file_with_a_partial_last_line_is_reported_by_name(
+        self, tmp_path: Path
+    ):
+        (tmp_path / "errors.jsonl").write_text('{"episode_id": "old"}\n{"epi')
+
+        with pytest.raises(ValueError, match=r"errors\.jsonl:final line"):
+            self._run(tmp_path, adapter=_RaisingAdapter(RuntimeError("boom")))
+
+    def test_errors_file_without_a_final_newline_is_appended_to(self, tmp_path: Path):
+        (tmp_path / "errors.jsonl").write_text('{"episode_id": "old"}')
+
+        self._run(tmp_path, adapter=_RaisingAdapter(RuntimeError("boom")))
+
+        rows = _jsonl(tmp_path / "errors.jsonl")
+        assert [r["episode_id"] for r in rows] == ["old", "ep-000001"]
+
+    def test_dataset_readme_mentions_the_errors_file(self, tmp_path: Path):
+        assert "`errors.jsonl`" in build_dataset_readme(tmp_path)

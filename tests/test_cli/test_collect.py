@@ -412,3 +412,30 @@ def test_resolved_llm_endpoint_is_printed(tmp_path: Path, mock_pipeline):
     assert result.exit_code == 0, result.output
     printed = [str(call.args[0]) for call in console.print.call_args_list]
     assert "[cyan]LLM endpoint:[/cyan] http://localhost" in printed
+
+
+def test_summary_prints_failures_by_outcome(tmp_path: Path, mock_pipeline):
+    collect_result = mock_pipeline["runner_instance"].run.return_value
+    collect_result.num_failed = 6
+    collect_result.num_unscored = 1
+    collect_result.num_policy_errors = 2
+    collect_result.num_infra_errors = 3
+
+    with patch("openenv.cli.commands.collect.console") as console:
+        result = runner.invoke(
+            app,
+            [
+                "collect",
+                "openspiel:tic_tac_toe",
+                "--base-url",
+                "https://example.hf.space",
+                "--output-dir",
+                str(tmp_path),
+                "--provider",
+                "scripted",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    printed = " ".join(str(call.args[0]) for call in console.print.call_args_list)
+    assert "unscored=1 policy_error=2 infra_error=3" in printed
