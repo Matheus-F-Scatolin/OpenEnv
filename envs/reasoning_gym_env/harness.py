@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import random
+import re
 from collections.abc import Mapping
 from typing import Any, Callable
 
@@ -31,6 +32,9 @@ from openenv.core.llm_client import ToolCall
 
 from .client import ReasoningGymEnv
 from .models import ReasoningGymAction
+
+# A complete <answer>...</answer> block with no other opening tag inside it.
+_ANSWER_BLOCK = re.compile(r"<answer>((?:(?!<answer>).)*?)</answer>", re.DOTALL)
 
 _REASONING_GYM_TOOLS: list[Tool] = [
     Tool(
@@ -86,9 +90,12 @@ def text_answer_model_step(model_step: ModelStep) -> ModelStep:
     argument is the content of the last complete `<answer>...</answer>` block, or the
     whole reply when there is none, without surrounding whitespace. The environment
     then scores that text, an empty one included; this step never scores anything.
+    A reply without the tags is submitted whole, so a dataset that compares answers
+    exactly gives it at most partial credit: ask for the tags in the prompt.
 
-    Use it for evaluation, not to collect training data: the transcript then holds a
-    tool call that the model did not write.
+    The step serves evaluation and training alike, since the environment scores what
+    the model wrote. Do not build supervised fine-tuning data from its transcripts:
+    they hold a tool call that the model did not write.
 
     Args:
         model_step (`ModelStep`):
@@ -120,9 +127,8 @@ def text_answer_model_step(model_step: ModelStep) -> ModelStep:
         if result.response.tool_calls:
             return result
         content = result.response.content
-        before, _, _ = content.rpartition("</answer>")
-        _, opening, inside = before.rpartition("<answer>")
-        answer = (inside if opening else content).strip()
+        blocks = _ANSWER_BLOCK.findall(content)
+        answer = (blocks[-1] if blocks else content).strip()
         call = ToolCall(id="text-answer", name="answer", args={"answer": answer})
         return dataclasses.replace(
             result, response=dataclasses.replace(result.response, tool_calls=[call])
