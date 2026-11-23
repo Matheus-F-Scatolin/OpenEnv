@@ -458,7 +458,7 @@ class TestTasksOption:
         metadata = mock_pipeline[
             "serializer_cls"
         ].return_value.write_metadata.call_args.args[0]
-        assert metadata["tasks"] == str(tasks_path)
+        assert metadata["tasks"] == "tasks.jsonl"
         assert metadata["num_tasks"] == 3
 
     def test_without_tasks_the_runner_gets_none(self, tmp_path: Path, mock_pipeline):
@@ -492,6 +492,18 @@ class TestTasksOption:
         assert expected_message in _usage_error_text(result.output)
         mock_pipeline["serializer_cls"].return_value.write_metadata.assert_not_called()
         mock_pipeline["runner_instance"].run.assert_not_called()
+
+    def test_tasks_file_that_is_not_utf8_is_usage_error(
+        self, tmp_path: Path, mock_pipeline
+    ):
+        tasks_path = tmp_path / "tasks.jsonl"
+        tasks_path.write_bytes(b'{"id": "t0"}\n\xff\n')
+
+        result = runner.invoke(app, _collect_args(tmp_path, "--tasks", str(tasks_path)))
+
+        assert result.exit_code == 2, result.output
+        assert "is not UTF-8 text" in _usage_error_text(result.output)
+        mock_pipeline["serializer_cls"].return_value.write_metadata.assert_not_called()
 
     def test_missing_tasks_file_is_usage_error(self, tmp_path: Path, mock_pipeline):
         result = runner.invoke(

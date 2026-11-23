@@ -391,7 +391,12 @@ def collect(
     task_specs: list[Any] | None = None
     if tasks is not None:
         task_specs = []
-        lines = tasks.read_text(encoding="utf-8").splitlines()
+        try:
+            lines = tasks.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError as exc:
+            raise typer.BadParameter(
+                f"{tasks} is not UTF-8 text.", param_hint="--tasks"
+            ) from exc
         for line_number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
@@ -437,7 +442,8 @@ def collect(
             "num_episodes_requested": num_episodes,
             "temperature": temperature,
             "keep_losses": keep_losses,
-            "tasks": None if tasks is None else str(tasks),
+            # The file name only: the metadata goes into the dataset card.
+            "tasks": None if tasks is None else tasks.name,
             "num_tasks": None if task_specs is None else len(task_specs),
         }
     )
