@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -240,6 +241,10 @@ class EnvEvalHarness(EvalHarness):
     `completion_tokens` and, for an exception, `error` in its `extra`, and last
     `metadata.json`. A run folder that already exists is never written into.
 
+    Before the episodes, `run` checks that two resets of the first task with the
+    first seed give the same initial messages, and that the second task gives
+    different ones. A failed check warns and sets `reproducible` to False.
+
     Args:
         session_factory ([`~openenv.core.harness.ResourceSessionFactory`]):
             Creates one session per episode from a task spec and a seed.
@@ -312,8 +317,9 @@ class EnvEvalHarness(EvalHarness):
         """
         Evaluate the policy and return its scores.
 
-        Exceptions from closing a session are not classified and propagate, as
-        does the error of a final reward that is not a number.
+        Exceptions from the reproducibility check's resets and from closing a
+        session are not classified and propagate, as does the error of a final
+        reward that is not a number.
 
         Args:
             harness_version (`str`):
@@ -346,6 +352,7 @@ class EnvEvalHarness(EvalHarness):
                 - `per_task` (`dict[str, str]`): `solved` when every scored or
                   `policy_error` episode of the task is solved, `left_out` when it
                   has none, else `not_solved`.
+                - `reproducible` (`bool`): whether both reset checks passed.
 
         Raises:
             `ValueError`: If a setting is invalid; nothing has been run or written.
@@ -358,6 +365,8 @@ class EnvEvalHarness(EvalHarness):
             run_dir = self._output_dir / f"run-{self._runs:04d}"
             if run_dir.exists():
                 raise FileExistsError(f"{run_dir} already exists")
+        reproducible = self._check_reproducible(tasks, params["seeds"][0])
+        if run_dir is not None:
             run_dir.mkdir(parents=True)
             self._runs += 1
 
@@ -383,6 +392,7 @@ class EnvEvalHarness(EvalHarness):
                     episodes.append(episode)
 
         scores = self._scores(tasks, episodes, params)
+        scores["reproducible"] = reproducible
         if run_dir is not None:
             RolloutSerializer(run_dir).write_metadata(
                 {
@@ -393,6 +403,7 @@ class EnvEvalHarness(EvalHarness):
                     "eval_parameters": {**eval_parameters, **params},
                     "num_tasks": len(tasks),
                     "num_episodes": len(episodes),
+                    "reproducible": reproducible,
                 }
             )
         return scores
@@ -447,6 +458,35 @@ class EnvEvalHarness(EvalHarness):
                 )
         outcome = "unscored" if reward is None else "scored"
         return _Episode(task, seed, sample, outcome, reward=reward, **finished)
+
+    def _check_reproducible(self, tasks: list[Mapping[str, Any]], seed: int) -> bool:
+        """Reset the first task twice and the second once; warn on a failed check."""
+        first = self._initial_messages(tasks[0], seed)
+        reproducible = True
+        if self._initial_messages(tasks[0], seed) != first:
+            warnings.warn(
+                "Two resets of the same task and seed gave different initial "
+                "messages; scores may not be comparable across checkpoints.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            reproducible = False
+        if len(tasks) > 1 and self._initial_messages(tasks[1], seed) == first:
+            warnings.warn(
+                "Resets of two different tasks gave the same initial messages; the "
+                "environment may ignore the task it is given.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            reproducible = False
+        return reproducible
+
+    def _initial_messages(self, task: Mapping[str, Any], seed: int) -> str:
+        session = self._session_factory.create(task, seed=seed, episode_id=None)
+        try:
+            return json.dumps(session.initial_messages(), sort_keys=True, default=str)
+        finally:
+            session.close()
 
     @staticmethod
     def _write(run_dir: Path, record: EpisodeRecord) -> None:

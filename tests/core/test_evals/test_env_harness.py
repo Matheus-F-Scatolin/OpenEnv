@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,8 @@ class FakeSession(ResourceSession):
     - `answer`: the correct answer (reward 1.0, else 0.0, episode ends);
     - `steps`: a list of `(reward, done)` returned step by step instead;
     - `step_error` / `verify_error`: an exception raised by that call;
-    - `create_error`: an exception the factory raises for an episode;
+    - `create_error`: an exception the factory raises for an episode (not for
+      the reproducibility checks, which pass no episode id);
     - `verify_reward`: what `verify` reports instead of the last step's reward.
     """
 
@@ -59,9 +61,16 @@ class FakeSession(ResourceSession):
         self.seed = seed
         self.rewards: list[float | None] = []
         self.closed = 0
+        factory.counter += 1
+        self.number = factory.counter
 
     def initial_messages(self) -> list[dict[str, Any]]:
-        content = f"question {self.task['id']} seed {self.seed}"
+        if self.factory.ignore_task:
+            content = "the same question"
+        else:
+            content = f"question {self.task['id']} seed {self.seed}"
+        if self.factory.nondeterministic:
+            content += f" #{self.number}"
         return [{"role": "user", "content": content}]
 
     def list_tools(self) -> list[Tool]:
@@ -102,13 +111,18 @@ class FakeFactory(ResourceSessionFactory):
     def __init__(
         self,
         *,
+        ignore_task: bool = False,
+        nondeterministic: bool = False,
         close_error: Exception | None = None,
         create_error: Exception | None = None,
     ) -> None:
+        self.ignore_task = ignore_task
+        self.nondeterministic = nondeterministic
         self.close_error = close_error
         self.create_error = create_error
         self.calls: list[tuple[str, int | None, str | None]] = []
         self.sessions: list[FakeSession] = []
+        self.counter = 0
 
     def create(
         self, task: Any, seed: int | None = None, episode_id: str | None = None
@@ -201,7 +215,9 @@ def harness(
 
 
 def run(evaluator: EnvEvalHarness, **params: Any) -> dict[str, Any]:
-    return evaluator.run("0.1", {}, "fake", params)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return evaluator.run("0.1", {}, "fake", params)
 
 
 def records(path: Path) -> list[dict[str, Any]]:
@@ -716,7 +732,9 @@ class TestScores:
             dataset="fake",
             eval_parameters={"seeds": [0]},
         )
-        result = evaluator.run_from_config(config)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            result = evaluator.run_from_config(config)
         assert EvalResult.model_validate_json(result.model_dump_json()) == result
 
 
@@ -771,6 +789,7 @@ class TestOutputFiles:
         assert metadata["harness"] == "EnvEvalHarness"
         assert metadata["num_tasks"] == 4
         assert metadata["num_episodes"] == 4
+        assert metadata["reproducible"] is True
         assert metadata["eval_parameters"]["seeds"] == [7]
 
     def test_verify_error_keeps_the_token_count(self, tmp_path: Path) -> None:
@@ -803,6 +822,59 @@ class TestOutputFiles:
         evaluator, _ = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
         run(evaluator)
         assert (tmp_path / "result.json").read_text() == "{}"
+
+
+class TestReproducibility:
+    def test_deterministic_env_is_reproducible(self) -> None:
+        tasks = [task("t0"), task("t1")]
+        policy = Policy({"t0": "4", "t1": "4"})
+        evaluator, factory = harness(tasks, policy)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            scores = evaluator.run("0.1", {}, "fake", {"seeds": [3]})
+        assert scores["reproducible"] is True
+        checks = [call for call in factory.calls if call[2] is None]
+        assert checks == [("t0", 3, None), ("t0", 3, None), ("t1", 3, None)]
+        assert all(session.closed == 1 for session in factory.sessions)
+        assert policy.calls == 2
+
+    def test_env_ignoring_task_fails_second_check(self) -> None:
+        tasks = [task("t0"), task("t1")]
+        evaluator, factory = harness(
+            tasks, Policy({"t0": "4", "t1": "4"}), FakeFactory(ignore_task=True)
+        )
+        with pytest.warns(RuntimeWarning, match="different tasks"):
+            scores = evaluator.run("0.1", {}, "fake", {})
+        assert scores["reproducible"] is False
+        assert len(factory.episode_calls) == 2
+
+    def test_nondeterministic_env_fails_first_check(self) -> None:
+        evaluator, _ = harness(
+            [task("t0")], Policy({"t0": "4"}), FakeFactory(nondeterministic=True)
+        )
+        with pytest.warns(RuntimeWarning, match="same task and seed"):
+            scores = evaluator.run("0.1", {}, "fake", {})
+        assert scores["reproducible"] is False
+
+    @pytest.mark.parametrize("tasks, limit", [(1, None), (2, 1)])
+    def test_one_task_runs_only_the_first_check(
+        self, tasks: int, limit: int | None
+    ) -> None:
+        task_list = [task(f"t{i}") for i in range(tasks)]
+        evaluator, factory = harness(task_list, Policy({"t0": "4", "t1": "4"}))
+        scores = run(evaluator, limit=limit)
+        assert scores["reproducible"] is True
+        assert len([call for call in factory.calls if call[2] is None]) == 2
+
+    def test_check_errors_propagate_before_writing(self, tmp_path: Path) -> None:
+        factory = FakeFactory(create_error=ConnectionError("down"))
+        evaluator, _ = harness([task("t0")], Policy({"t0": "4"}), factory, tmp_path)
+        with pytest.raises(ConnectionError, match="down"):
+            run(evaluator)
+        assert list(tmp_path.iterdir()) == []
+        factory.create_error = None
+        run(evaluator)
+        assert (tmp_path / "run-0000" / "results.jsonl").exists()
 
 
 class TestExports:
