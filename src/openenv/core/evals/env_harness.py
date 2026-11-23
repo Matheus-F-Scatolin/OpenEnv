@@ -38,7 +38,7 @@ from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
 
-ERRORS_FILENAME = "errors.jsonl"
+_ERRORS_FILENAME = "errors.jsonl"
 
 # Failures the policy's output cannot cause: a lost connection to the environment,
 # and the model endpoint's connection, timeout, authentication, routing, rate-limit
@@ -141,7 +141,7 @@ class _Episode:
     tokens: int | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
-        if self.finished and self.rollout is not None:
+        if self.rollout is not None:
             self.turns = self.rollout.metrics.get("turns")
             self.tokens = len(self.rollout.completion_ids) or None
 
@@ -211,6 +211,13 @@ class EnvEvalHarness(EvalHarness):
       not be reached or answered with an authentication, rate-limit or server error,
       or `verify` forwarded a reward that differs from the environment's.
 
+    An exception counts as `infra_error` only when it is a builtin `ConnectionError`
+    (such as `SessionLostError`), a `websockets` `ConnectionClosed`, or one of the
+    `openai` client's connection, timeout, authentication, permission, not-found,
+    rate-limit and server errors. Anything else counts as `policy_error`: an
+    environment step that times out, an error frame from the server, and the same
+    failures raised by another model client, such as an Anthropic rate limit.
+
     `unscored` and `infra_error` episodes are left out of `success_rate`,
     `mean_reward` and `pass@k`, and reported apart. A `policy_error` counts as not
     solved, so a policy cannot raise its score by failing to answer.
@@ -265,7 +272,7 @@ class EnvEvalHarness(EvalHarness):
     harness = EnvEvalHarness(
         session_factory,
         MCPHarnessAdapter(),
-        client.get_task_range("test"),
+        list(client.iter_tasks("test")),
         model_step=build_model_step(OpenAIClient(POLICY_URL, None, model="policy")),
     )
     result = harness.run_from_config(config)
@@ -310,6 +317,10 @@ class EnvEvalHarness(EvalHarness):
     ) -> dict[str, Any]:
         """
         Evaluate the policy and return its scores.
+
+        Exceptions from the reproducibility check's resets and from closing a
+        session are not classified and propagate, as does the error of a final
+        reward that is not a number.
 
         Args:
             harness_version (`str`):
@@ -483,7 +494,7 @@ class EnvEvalHarness(EvalHarness):
         if record.extra["outcome"] == "scored":
             RolloutSerializer(run_dir).write_episode(record)
             return
-        with (run_dir / ERRORS_FILENAME).open("a", encoding="utf-8") as handle:
+        with (run_dir / _ERRORS_FILENAME).open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record.to_dict(), default=str) + "\n")
 
     @staticmethod
@@ -630,6 +641,5 @@ def compare_eval_results(before: EvalResult, after: EvalResult) -> EvalCompariso
 __all__ = [
     "compare_eval_results",
     "EnvEvalHarness",
-    "ERRORS_FILENAME",
     "EvalComparison",
 ]
