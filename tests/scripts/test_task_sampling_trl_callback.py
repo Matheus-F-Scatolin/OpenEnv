@@ -114,6 +114,28 @@ class TestEvalScheduleCallback:
         train(callback, state, 6, 10)
         assert events == ["sync", ("eval", 10)]
 
+    @pytest.mark.parametrize(
+        ("every", "rank_zero", "extra"),
+        [
+            (3, True, ["sync", ("eval", 7)]),
+            (3, False, ["sync"]),
+            (7, True, []),
+            (0, True, []),
+        ],
+    )
+    def test_evaluates_the_last_step_once(
+        self, example: ModuleType, every: int, rank_zero: bool, extra: list
+    ) -> None:
+        events: list = []
+        callback = example.EvalScheduleCallback(
+            make_schedule(every, events), sync=lambda: events.append("sync")
+        )
+        state = SimpleNamespace(global_step=0, is_world_process_zero=rank_zero)
+        train(callback, state, 1, 7)
+        before = list(events)
+        callback.on_train_end(None, state, None)
+        assert events == before + extra
+
 
 class TestWithTransformers:
     def test_runs_inside_the_trainers_callback_handler(self, tmp_path: Path) -> None:
@@ -129,9 +151,10 @@ class TestWithTransformers:
         state = transformers.TrainerState()
         control = transformers.TrainerControl()
         handler.on_train_begin(args, state, control)
-        for _ in range(4):
+        for _ in range(5):
             state.global_step += 1
             handler.on_step_end(args, state, control)
+        handler.on_train_end(args, state, control)
         assert events == [
             "sync",
             ("eval", 0),
@@ -139,4 +162,6 @@ class TestWithTransformers:
             ("eval", 2),
             "sync",
             ("eval", 4),
+            "sync",
+            ("eval", 5),
         ]

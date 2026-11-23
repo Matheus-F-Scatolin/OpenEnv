@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
 class EvalScheduleCallback(TrainerCallback):
     """
-    Run an `EvalSchedule` on the starting weights and after every `every_n_steps`
-    optimizer steps.
+    Run an `EvalSchedule` on the starting weights, after every `every_n_steps`
+    optimizer steps, and on the final weights.
 
     Before each evaluation, every process calls `sync`, which must leave the policy
     endpoint serving the weights of the current step. Then the main process runs the
@@ -68,14 +68,30 @@ class EvalScheduleCallback(TrainerCallback):
         """Evaluate after the optimizer steps that the schedule marks."""
         self._maybe_evaluate(state)
 
+    def on_train_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs: Any,
+    ) -> None:
+        """Evaluate the final weights, unless the last step was evaluated already."""
+        every = self.schedule.every_n_steps
+        if every and state.global_step % every:
+            self._evaluate(state)
+
     def _maybe_evaluate(self, state: TrainerState) -> None:
-        # The same steps as `EvalSchedule.maybe_run`. Syncing gathers the weights
-        # across processes, so every process takes part before rank 0 evaluates.
+        # The same steps as `EvalSchedule.maybe_run`.
         every = self.schedule.every_n_steps
         if every and state.global_step % every == 0:
-            self.sync()
-            if state.is_world_process_zero:
-                self.schedule.run(state.global_step)
+            self._evaluate(state)
+
+    def _evaluate(self, state: TrainerState) -> None:
+        # Syncing gathers the weights across processes, so every process takes part
+        # before rank 0 evaluates.
+        self.sync()
+        if state.is_world_process_zero:
+            self.schedule.run(state.global_step)
 
 
 __all__ = ["EvalScheduleCallback"]
