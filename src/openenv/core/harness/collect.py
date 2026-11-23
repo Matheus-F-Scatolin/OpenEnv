@@ -104,6 +104,10 @@ class EpisodeRecord:
     # "<Type>: <message>" of the exception that ended the episode, if any.
     error: str | None = None
     seed: int | None = None
+    # The ids the model generated, when the model step returns them. The episode's
+    # generated token count is their length, else `metrics["completion_tokens"]`
+    # (the provider's count), else unknown. Never re-tokenize `messages`.
+    completion_ids: list[int] = field(default_factory=list)
 
     @classmethod
     def from_rollout(
@@ -172,6 +176,7 @@ class EpisodeRecord:
             extra=dict(extra or {}),
             outcome=outcome,
             seed=seed,
+            completion_ids=list(rollout.completion_ids),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -685,6 +690,8 @@ def build_dataset_readme(output_dir: Path) -> str:
             "- `metrics`, `verify_metrics`, `artifacts`",
             "- `task`, `extra` (optional call-site annotations)",
             "- `seed` (int or null: the seed the session was created with)",
+            "- `completion_ids` (generated token ids, when the model step returns "
+            "them)",
             "",
             "Episodes without a reward are in `errors.jsonl`, with the same fields: "
             "`reward` null, `outcome` `unscored`, `policy_error` or `infra_error`, "

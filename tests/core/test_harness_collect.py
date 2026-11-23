@@ -1741,3 +1741,49 @@ class TestCollectRunnerSeeds:
 
     def test_dataset_readme_lists_seed(self, tmp_path: Path):
         assert "- `seed`" in build_dataset_readme(tmp_path)
+
+
+class TestEpisodeTokenCounts:
+    def test_from_rollout_copies_completion_ids(self):
+        rollout = _fake_rollout()
+        rollout.completion_ids = [5, 6, 7]
+
+        record = EpisodeRecord.from_rollout("ep1", rollout, _fake_verify())
+
+        assert record.completion_ids == [5, 6, 7]
+
+    def test_counts_survive_results_jsonl(self, tmp_path: Path):
+        rollout = _fake_rollout()
+        rollout.completion_ids = [5, 6, 7]
+        rollout.metrics["completion_tokens"] = 3
+        serializer = RolloutSerializer(tmp_path)
+
+        serializer.write_episode(
+            EpisodeRecord.from_rollout("ep1", rollout, _fake_verify())
+        )
+
+        payload = json.loads(serializer.results_path.read_text())
+        assert payload["completion_ids"] == [5, 6, 7]
+        assert payload["metrics"]["completion_tokens"] == 3
+
+    def test_endpoint_count_reaches_results_jsonl(self, tmp_path: Path):
+        client = _RecordingLLMClient(
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="call-0", name="play_move", args={})],
+                completion_tokens=4,
+            )
+        )
+        runner = CollectRunner(
+            session_factory=_FakeFactory(),
+            harness_adapter=MCPHarnessAdapter(),
+            serializer=RolloutSerializer(tmp_path),
+        )
+
+        result = runner.run(model_step=build_model_step(client), num_episodes=2)
+
+        lines = (tmp_path / "results.jsonl").read_text().splitlines()
+        payloads = [json.loads(line) for line in lines]
+        assert result.num_collected == 2
+        assert [p["metrics"]["completion_tokens"] for p in payloads] == [4, 4]
+        assert [p["completion_ids"] for p in payloads] == [[], []]

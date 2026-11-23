@@ -85,7 +85,7 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `reward` | float | Env reward: the last one in the tool trace, else the one `verify()` forwards; never synthesized |
 | `done` | bool | Whether the episode terminated |
 | `tool_trace` | list | Structured tool calls with args & results |
-| `metrics` | struct | Harness-level metrics (turns, tool_calls) |
+| `metrics` | struct | Harness-level metrics (turns, tool_calls; `completion_tokens` when the provider reported a count for every turn) |
 | `verify_metrics` | struct | Session-level metrics (step_count, …) |
 | `artifacts` | struct | Verification artifacts (final state, etc.) |
 | `task` | any | Optional task spec passed by `CollectRunner.tasks` |
@@ -93,6 +93,11 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `outcome` | string | `scored`: the environment ended the episode with a reward. `policy_error`: the harness ended it (no tool call, a turn or tool-call limit) after a step returned `reward` |
 | `error` | string or null | `<Type>: <message>` of the exception that ended the episode (`errors.jsonl` only) |
 | `seed` | int or null | Seed passed to the session factory (`CollectRunner.seeds`, aligned with `tasks`), else null |
+| `completion_ids` | list | Token ids the model generated, when the model step returns them (empty otherwise) |
+
+The generated token count of an episode is `len(completion_ids)` when it is not
+empty, else `metrics.completion_tokens`, else unknown. It is never recomputed by
+tokenizing `messages`.
 
 `errors.jsonl` — one record per episode without a reward, with the same fields
 and `reward` null. Its `outcome` says why:

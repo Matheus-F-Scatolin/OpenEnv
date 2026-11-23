@@ -492,6 +492,48 @@ class TestOpenAIClientCompleteWithTools:
         assert result.tool_calls[0].name == "get_weather"
         assert result.tool_calls[0].args == {"city": "SF"}
 
+    @pytest.mark.asyncio
+    async def test_keeps_completion_token_count(self):
+        """The provider's count of generated tokens is kept on the response."""
+        mock_openai = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.content = "Hello there"
+        mock_msg.tool_calls = None
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = mock_msg
+        mock_response.usage.completion_tokens = 17
+        mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        with patch("openenv.core.llm_client.AsyncOpenAI", return_value=mock_openai):
+            client = OpenAIClient("http://localhost", 8000, model="gpt-4")
+            result = await client.complete_with_tools(
+                [{"role": "user", "content": "hi"}], []
+            )
+
+        assert result.completion_tokens == 17
+
+    @pytest.mark.asyncio
+    async def test_no_usage_gives_no_token_count(self):
+        """A server that sends no usage leaves the count unknown, not zero."""
+        mock_openai = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.content = "Hello there"
+        mock_msg.tool_calls = None
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = mock_msg
+        mock_response.usage = None
+        mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        with patch("openenv.core.llm_client.AsyncOpenAI", return_value=mock_openai):
+            client = OpenAIClient("http://localhost", 8000, model="gpt-4")
+            result = await client.complete_with_tools(
+                [{"role": "user", "content": "hi"}], []
+            )
+
+        assert result.completion_tokens is None
+
 
 class TestAnthropicClientConstruction:
     """Test AnthropicClient initialization."""
@@ -589,6 +631,33 @@ class TestAnthropicClientCompleteWithTools:
         assert result.tool_calls[0].id == "toolu_abc"
         assert result.tool_calls[0].name == "get_weather"
         assert result.tool_calls[0].args == {"city": "SF"}
+
+    @pytest.mark.asyncio
+    async def test_keeps_output_token_count(self):
+        """Anthropic's output token count is kept as the generated token count."""
+        mock_anthropic = MagicMock()
+        mock_text_block = MagicMock()
+        mock_text_block.type = "text"
+        mock_text_block.text = "4"
+        mock_response = MagicMock()
+        mock_response.content = [mock_text_block]
+        mock_response.usage.output_tokens = 9
+        mock_anthropic.messages.create = AsyncMock(return_value=mock_response)
+
+        client = AnthropicClient.__new__(AnthropicClient)
+        client.endpoint = "https://api.anthropic.com"
+        client.port = 443
+        client.model = "claude-sonnet-4-20250514"
+        client.system_prompt = None
+        client.temperature = 0.0
+        client.max_tokens = 256
+        client._client = mock_anthropic
+
+        result = await client.complete_with_tools(
+            [{"role": "user", "content": "What is 2+2?"}], []
+        )
+
+        assert result.completion_tokens == 9
 
 
 # ---------------------------------------------------------------------------
