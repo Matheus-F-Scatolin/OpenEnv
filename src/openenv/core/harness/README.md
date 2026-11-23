@@ -119,7 +119,8 @@ HF Dataset Viewer renders `results.jsonl` as `split=train`.
 - **Rewards in env** — `EpisodeRecord.from_rollout` reads the reward as the
   runtime's `_resolve_env_reward` does, so any mismatch between the reward
   emitted by a tool result and the one forwarded by `session.verify()` raises
-  immediately. A missing reward stays None; it is never filled in.
+  immediately, except that an episode the environment ended with no reward on
+  its final step keeps the reward None. A missing reward is never filled in.
 - **Provider-agnostic teacher** — `build_model_step` adapts any
   `openenv.core.llm_client.LLMClient` (OpenAI, Anthropic, OpenAI-compatible
   self-hosted endpoints) into a `ModelStep`. No schema code per provider.
