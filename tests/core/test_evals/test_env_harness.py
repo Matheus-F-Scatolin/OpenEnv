@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -23,6 +24,7 @@ from openenv.core.harness import (
     ToolResult,
     VerifyResult,
 )
+from openenv.core.harness.collect import RolloutSerializer
 from openenv.core.llm_client import LLMResponse, ToolCall
 from websockets.exceptions import ConnectionClosed
 
@@ -183,6 +185,7 @@ def harness(
     tasks: list[dict[str, Any]],
     policy: Policy,
     factory: FakeFactory | None = None,
+    output_dir: Path | None = None,
 ) -> tuple[EnvEvalHarness, FakeFactory]:
     factory = factory or FakeFactory()
     return (
@@ -191,6 +194,7 @@ def harness(
             MCPHarnessAdapter(),
             tasks,
             model_step=policy,
+            output_dir=output_dir,
         ),
         factory,
     )
@@ -198,6 +202,12 @@ def harness(
 
 def run(evaluator: EnvEvalHarness, **params: Any) -> dict[str, Any]:
     return evaluator.run("0.1", {}, "fake", params)
+
+
+def records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
 def _request() -> httpx.Request:
@@ -305,26 +315,30 @@ class TestParameters:
         ],
     )
     def test_invalid_values_raise_before_anything(
-        self, params: dict[str, Any], key: str
+        self, tmp_path: Path, params: dict[str, Any], key: str
     ) -> None:
-        evaluator, factory = harness([task("t0")], Policy({"t0": "4"}))
+        evaluator, factory = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
         with pytest.raises(ValueError, match=key):
             evaluator.run("0.1", {}, "fake", params)
         assert factory.calls == []
+        assert list(tmp_path.iterdir()) == []
 
-    def test_unknown_keys_are_ignored_and_recorded(self) -> None:
-        evaluator, _ = harness([task("t0")], Policy({"t0": "4"}))
+    def test_unknown_keys_are_ignored_and_recorded(self, tmp_path: Path) -> None:
+        evaluator, _ = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
         params = {"model": "m", "llm_endpoint": "http://llm/v1", "split": "test"}
-        config = EvalConfig(
-            harness_name=evaluator.name,
-            harness_version="0.1",
-            library_versions={},
-            dataset="fake",
-            eval_parameters=params,
-        )
-        result = evaluator.run_from_config(config)
-        assert result.scores["success_rate"] == 1.0
-        assert result.config.eval_parameters == params
+        scores = run(evaluator, **params)
+        assert scores["success_rate"] == 1.0
+        metadata = json.loads((tmp_path / "run-0000" / "metadata.json").read_text())
+        assert metadata["eval_parameters"] == {
+            **params,
+            "limit": None,
+            "seeds": [0],
+            "samples_per_task": 1,
+            "temperature": 0.0,
+            "success_threshold": 1.0,
+            "max_turns": 9,
+            "max_tokens": 200,
+        }
 
     def test_limit_and_episode_order(self) -> None:
         tasks = [task("t0"), task("t1"), task("t2")]
@@ -356,22 +370,27 @@ class TestOutcomes:
         assert scores["mean_reward"] == 0.5
         assert run(evaluator, success_threshold=0.5)["success_rate"] == 1.0
 
-    def test_reward_is_never_rounded(self) -> None:
+    def test_reward_is_never_rounded(self, tmp_path: Path) -> None:
         reward = 0.8333333333333334
         evaluator, _ = harness(
-            [task("t0", steps=[(reward, True)])], Policy({"t0": "4"})
+            [task("t0", steps=[(reward, True)])], Policy({"t0": "4"}), None, tmp_path
         )
         assert run(evaluator)["mean_reward"] == reward
+        (record,) = records(tmp_path / "run-0000" / "results.jsonl")
+        assert record["reward"] == reward
 
-    def test_env_ended_with_none_is_unscored(self) -> None:
+    def test_env_ended_with_none_is_unscored(self, tmp_path: Path) -> None:
         tasks = [task("t0"), task("t1", steps=[(None, True)])]
-        evaluator, _ = harness(tasks, Policy({"t0": "4", "t1": "4"}))
+        evaluator, _ = harness(tasks, Policy({"t0": "4", "t1": "4"}), None, tmp_path)
         scores = run(evaluator)
         assert scores["unscored_rate"] == 0.5
         assert scores["success_rate"] == 1.0
         assert scores["mean_reward"] == 1.0
         assert scores["pass@1"] == 1.0
         assert scores["pass@1_num_tasks"] == 1
+        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
+        assert record["reward"] is None
+        assert record["extra"]["outcome"] == "unscored"
 
     def test_final_none_after_earlier_zero_is_unscored(self) -> None:
         late_failure = task("t0", steps=[(0.0, False), (None, True)])
@@ -387,22 +406,31 @@ class TestOutcomes:
         assert scores["mean_reward"] == 0.75
         assert scores["unscored_rate"] == 0.0
 
-    def test_reply_without_tool_call_is_policy_error(self) -> None:
+    def test_reply_without_tool_call_is_policy_error(self, tmp_path: Path) -> None:
         tasks = [task("t0"), task("t1")]
-        evaluator, _ = harness(tasks, Policy({"t0": "4", "t1": None}))
+        evaluator, _ = harness(tasks, Policy({"t0": "4", "t1": None}), None, tmp_path)
         scores = run(evaluator)
         assert scores["error_rate"] == 0.5
         assert scores["success_rate"] == 0.5
         assert scores["pass@1"] == 0.5
         assert scores["mean_reward"] == 1.0
+        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
+        assert record["reward"] is None
+        assert record["extra"]["outcome"] == "policy_error"
+        assert "error" not in record["extra"]
 
-    def test_turn_limit_after_rewarded_step_is_policy_error(self) -> None:
+    def test_turn_limit_after_rewarded_step_is_policy_error(
+        self, tmp_path: Path
+    ) -> None:
         multi_turn = task("t0", steps=[(0.5, False), (1.0, True)])
-        evaluator, _ = harness([multi_turn], Policy({"t0": "4"}))
+        evaluator, _ = harness([multi_turn], Policy({"t0": "4"}), None, tmp_path)
         scores = run(evaluator, max_turns=1)
         assert scores["error_rate"] == 1.0
         assert scores["success_rate"] == 0.0
         assert scores["mean_reward"] is None
+        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
+        assert record["reward"] is None
+        assert record["tool_trace"][0]["result"]["metadata"]["reward"] == 0.5
 
     def test_verify_done_is_ignored(self) -> None:
         not_ended = task("t0", steps=[(0.0, False)] * 2, verify_reward=1.0)
@@ -423,12 +451,19 @@ class TestOutcomes:
         + INFRA_ERRORS[:1],
         ids=lambda e: type(e).__name__,
     )
-    def test_create_failures_are_infra(self, error: Exception) -> None:
+    def test_create_failures_are_infra(self, tmp_path: Path, error: Exception) -> None:
         tasks = [task("t0"), task("t1"), task("t2", create_error=error)]
-        evaluator, _ = harness(tasks, Policy({"t0": "4", "t1": "x"}))
+        evaluator, _ = harness(tasks, Policy({"t0": "4", "t1": "x"}), None, tmp_path)
         scores = run(evaluator)
         assert scores["infra_error_rate"] == pytest.approx(1 / 3)
         assert scores["success_rate"] == 0.5
+        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
+        assert record["extra"]["outcome"] == "infra_error"
+        assert record["extra"]["error"] == f"{type(error).__name__}: {error}"
+        assert record["reward"] is None
+        assert record["done"] is False
+        assert record["messages"] == []
+        assert record["tool_trace"] == []
 
     @pytest.mark.parametrize("where", ["model_step", "call_tool", "verify"])
     @pytest.mark.parametrize("error", INFRA_ERRORS, ids=lambda e: type(e).__name__)
@@ -458,22 +493,30 @@ class TestOutcomes:
         evaluator, _ = harness([task("t0"), failing], Policy({"t0": "4", "t1": answer}))
         return run(evaluator)
 
-    def test_reward_mismatch_is_infra(self) -> None:
+    def test_reward_mismatch_is_infra(self, tmp_path: Path) -> None:
         mismatch = task("t0", verify_reward=0.0)
-        evaluator, _ = harness([mismatch], Policy({"t0": "4"}))
+        evaluator, _ = harness([mismatch], Policy({"t0": "4"}), None, tmp_path)
         assert run(evaluator)["infra_error_rate"] == 1.0
+        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
+        assert "verify.env_reward must forward" in record["extra"]["error"]
+        assert record["messages"]
 
-    def test_mismatch_tolerance_is_upstreams(self) -> None:
+    def test_mismatch_tolerance_is_upstreams(self, tmp_path: Path) -> None:
         close = task("t0", verify_reward=1.0 + 1e-12)
-        evaluator, _ = harness([close], Policy({"t0": "4"}))
+        evaluator, _ = harness([close], Policy({"t0": "4"}), None, tmp_path)
         assert run(evaluator)["mean_reward"] == 1.0
+        (record,) = records(tmp_path / "run-0000" / "results.jsonl")
+        assert record["reward"] == 1.0
 
-    def test_keyboard_interrupt_propagates_and_session_closes(self) -> None:
+    def test_keyboard_interrupt_propagates_and_session_closes(
+        self, tmp_path: Path
+    ) -> None:
         policy = Policy({"t0": KeyboardInterrupt()})
-        evaluator, factory = harness([task("t0")], policy)
+        evaluator, factory = harness([task("t0")], policy, None, tmp_path)
         with pytest.raises(KeyboardInterrupt):
             run(evaluator)
         assert all(session.closed == 1 for session in factory.sessions)
+        assert not (tmp_path / "run-0000" / "metadata.json").exists()
 
     def test_every_session_is_closed_once(self) -> None:
         tasks = [
@@ -675,6 +718,91 @@ class TestScores:
         )
         result = evaluator.run_from_config(config)
         assert EvalResult.model_validate_json(result.model_dump_json()) == result
+
+
+class TestOutputFiles:
+    def test_none_output_dir_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        evaluator, _ = harness([task("t0")], Policy({"t0": "4"}))
+        run(evaluator)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_files_and_record_shape(self, tmp_path: Path) -> None:
+        tasks = [
+            task("t0"),
+            task("t1"),
+            task("t2", steps=[(None, True)]),
+            task("t3", create_error=ConnectionError("refused")),
+        ]
+        policy = Policy({"t0": "4", "t1": None, "t2": "4"})
+        evaluator, _ = harness(tasks, policy, None, tmp_path)
+        run(evaluator, seeds=[7])
+        run_dir = tmp_path / "run-0000"
+
+        assert RolloutSerializer(run_dir).collected_episode_ids() == {"ep-000000"}
+        (scored,) = records(run_dir / "results.jsonl")
+        assert scored["reward"] == 1.0
+        assert scored["task"] == tasks[0]
+        assert scored["extra"] == {
+            "outcome": "scored",
+            "seed": 7,
+            "sample": 0,
+            "completion_tokens": None,
+        }
+
+        errors = records(run_dir / "errors.jsonl")
+        assert [r["episode_id"] for r in errors] == [
+            "ep-000001",
+            "ep-000002",
+            "ep-000003",
+        ]
+        assert [r["extra"]["outcome"] for r in errors] == [
+            "policy_error",
+            "unscored",
+            "infra_error",
+        ]
+        assert errors[2]["extra"]["error"] == "ConnectionError: refused"
+        for record in [scored, *errors]:
+            assert "outcome" not in record and "seed" not in record
+
+        metadata = json.loads((run_dir / "metadata.json").read_text())
+        assert metadata["harness"] == "EnvEvalHarness"
+        assert metadata["num_tasks"] == 4
+        assert metadata["num_episodes"] == 4
+        assert metadata["eval_parameters"]["seeds"] == [7]
+
+    def test_verify_error_keeps_the_token_count(self, tmp_path: Path) -> None:
+        failing = task("t0", verify_error=ValueError("bad"))
+        policy = Policy({"t0": "4"}, completion_ids=[1, 2, 3])
+        evaluator, _ = harness([failing], policy, None, tmp_path)
+        scores = run(evaluator)
+        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
+        assert record["extra"]["outcome"] == "policy_error"
+        assert record["extra"]["completion_tokens"] == 3
+        assert scores["mean_completion_tokens"] is None
+
+    def test_repeated_runs_use_new_folders(self, tmp_path: Path) -> None:
+        evaluator, _ = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
+        run(evaluator)
+        first = (tmp_path / "run-0000" / "results.jsonl").read_bytes()
+        run(evaluator)
+        assert (tmp_path / "run-0001" / "results.jsonl").exists()
+        assert (tmp_path / "run-0000" / "results.jsonl").read_bytes() == first
+
+    def test_existing_run_folder_is_refused(self, tmp_path: Path) -> None:
+        (tmp_path / "run-0000").mkdir()
+        evaluator, factory = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
+        with pytest.raises(FileExistsError):
+            run(evaluator)
+        assert factory.calls == []
+
+    def test_other_files_are_left_alone(self, tmp_path: Path) -> None:
+        (tmp_path / "result.json").write_text("{}")
+        evaluator, _ = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
+        run(evaluator)
+        assert (tmp_path / "result.json").read_text() == "{}"
 
 
 class TestExports:

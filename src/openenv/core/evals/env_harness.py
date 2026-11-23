@@ -6,15 +6,22 @@ Evaluate a policy on an environment's tasks with the pieces of the collect pipel
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import openai
 from openenv.core.evals.base import EvalHarness
-from openenv.core.harness.collect import _rollout_final_state
+from openenv.core.harness.collect import (
+    _rollout_final_state,
+    _tool_trace_to_plain,
+    EpisodeRecord,
+    RolloutSerializer,
+)
 from openenv.core.harness.rollout import (
     _resolve_env_reward,
     _tool_result_reward,
@@ -28,6 +35,8 @@ from openenv.core.harness.rollout import (
 from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
+
+_ERRORS_FILENAME = "errors.jsonl"
 
 # Failures the policy's output cannot cause: a lost connection to the environment,
 # and the model endpoint's connection, timeout, authentication, routing, rate-limit
@@ -134,6 +143,29 @@ class _Episode:
             self.turns = self.rollout.metrics.get("turns")
             self.tokens = len(self.rollout.completion_ids) or None
 
+    def to_record(self, episode_id: str) -> EpisodeRecord:
+        rollout, verify = self.rollout, self.verify
+        extra: dict[str, Any] = {
+            "outcome": self.outcome,
+            "seed": self.seed,
+            "sample": self.sample,
+            "completion_tokens": self.tokens,
+        }
+        if self.error is not None:
+            extra["error"] = self.error
+        return EpisodeRecord(
+            episode_id=episode_id,
+            messages=[dict(m) for m in rollout.messages] if rollout else [],
+            reward=self.reward,  # None unless scored
+            done=bool(rollout and verify and (rollout.done or verify.done)),
+            tool_trace=_tool_trace_to_plain(rollout) if rollout else [],
+            metrics=dict(rollout.metrics) if rollout else {},
+            verify_metrics=dict(verify.metrics) if verify else {},
+            artifacts=dict(verify.artifacts) if verify else {},
+            task=self.task,
+            extra=extra,
+        )
+
 
 def _mean(values: list[Any]) -> float | None:
     """Mean of `values`, or None when there is none or any of them is None."""
@@ -201,6 +233,13 @@ class EnvEvalHarness(EvalHarness):
     | `max_turns` | `9` | The harness's turn limit. |
     | `max_tokens` | `200` | Passed to the model step. |
 
+    With `output_dir`, each call to `run` writes a new folder `run-0000`,
+    `run-0001`, ... inside it: `results.jsonl` with the scored episodes, written by
+    [`~openenv.core.harness.collect.RolloutSerializer`], `errors.jsonl` with every
+    other episode (reward None), each record with `outcome`, `seed`, `sample`,
+    `completion_tokens` and, for an exception, `error` in its `extra`, and last
+    `metadata.json`. A run folder that already exists is never written into.
+
     Args:
         session_factory ([`~openenv.core.harness.ResourceSessionFactory`]):
             Creates one session per episode from a task spec and a seed.
@@ -214,6 +253,8 @@ class EnvEvalHarness(EvalHarness):
             `build_model_step(OpenAIClient(...))` for an OpenAI-compatible endpoint.
             It receives `temperature` and `max_tokens` in its `sampling` argument;
             `mean_completion_tokens` needs it to return `completion_ids`.
+        output_dir (`str` or `Path`, *optional*):
+            Where the run folders go. Nothing is written without it.
 
     Raises:
         `ValueError`: If `tasks` is empty, or a task is not a mapping with a
@@ -240,6 +281,7 @@ class EnvEvalHarness(EvalHarness):
         tasks: Iterable[Mapping[str, Any]],
         *,
         model_step: ModelStep,
+        output_dir: str | Path | None = None,
     ) -> None:
         tasks = list(tasks)
         if not tasks:
@@ -257,6 +299,8 @@ class EnvEvalHarness(EvalHarness):
         self._harness_adapter = harness_adapter
         self._tasks = tasks
         self._model_step = model_step
+        self._output_dir = Path(output_dir) if output_dir is not None else None
+        self._runs = 0
 
     def run(
         self,
@@ -273,11 +317,11 @@ class EnvEvalHarness(EvalHarness):
 
         Args:
             harness_version (`str`):
-                Not used here; `run_from_config` keeps it in the result's config.
+                Recorded in `metadata.json`.
             library_versions (`dict[str, str]`):
-                Not used here; `run_from_config` keeps it in the result's config.
+                Recorded in `metadata.json`.
             dataset (`str`):
-                Not used here; `run_from_config` keeps it in the result's config.
+                Recorded in `metadata.json`.
             eval_parameters (`dict[str, Any]`):
                 The settings of the class's table; other keys are ignored.
 
@@ -304,10 +348,18 @@ class EnvEvalHarness(EvalHarness):
                   has none, else `not_solved`.
 
         Raises:
-            `ValueError`: If a setting is invalid; nothing has been run.
+            `ValueError`: If a setting is invalid; nothing has been run or written.
+            `FileExistsError`: If the next run folder already exists.
         """
         params = _resolve_parameters(eval_parameters)
         tasks = self._tasks[: params["limit"]]
+        run_dir = None
+        if self._output_dir is not None:
+            run_dir = self._output_dir / f"run-{self._runs:04d}"
+            if run_dir.exists():
+                raise FileExistsError(f"{run_dir} already exists")
+            run_dir.mkdir(parents=True)
+            self._runs += 1
 
         limits = HarnessRunLimits(
             max_turns=params["max_turns"],
@@ -326,9 +378,23 @@ class EnvEvalHarness(EvalHarness):
                         logger.warning(
                             "%s %s: %s", episode_id, episode.outcome, episode.error
                         )
+                    if run_dir is not None:
+                        self._write(run_dir, episode.to_record(episode_id))
                     episodes.append(episode)
 
         scores = self._scores(tasks, episodes, params)
+        if run_dir is not None:
+            RolloutSerializer(run_dir).write_metadata(
+                {
+                    "harness": self.name,
+                    "harness_version": harness_version,
+                    "library_versions": dict(library_versions),
+                    "dataset": dataset,
+                    "eval_parameters": {**eval_parameters, **params},
+                    "num_tasks": len(tasks),
+                    "num_episodes": len(episodes),
+                }
+            )
         return scores
 
     def _run_episode(
@@ -381,6 +447,14 @@ class EnvEvalHarness(EvalHarness):
                 )
         outcome = "unscored" if reward is None else "scored"
         return _Episode(task, seed, sample, outcome, reward=reward, **finished)
+
+    @staticmethod
+    def _write(run_dir: Path, record: EpisodeRecord) -> None:
+        if record.extra["outcome"] == "scored":
+            RolloutSerializer(run_dir).write_episode(record)
+            return
+        with (run_dir / _ERRORS_FILENAME).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record.to_dict(), default=str) + "\n")
 
     @staticmethod
     def _scores(
