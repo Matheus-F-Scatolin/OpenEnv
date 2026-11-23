@@ -15,6 +15,7 @@ the collect pipeline).
 from __future__ import annotations
 
 import random
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from openenv.core.env_server.mcp_types import Tool
@@ -91,8 +92,36 @@ class ReasoningGymSessionFactory(ResourceSessionFactory):
         seed: int | None = None,
         episode_id: str | None = None,
     ) -> StepEnvSessionAdapter:
+        """
+        Start a session for one episode.
+
+        A task spec with `split` and `index`, as the environment's Task API serves
+        it, is started with `reset(split=..., index=..., seed=...)`. Any other task
+        starts a one-question dataset of the factory's dataset, with a random seed
+        when none is given.
+
+        Args:
+            task (`Any`, *optional*):
+                The task spec.
+            seed (`int`, *optional*):
+                Seed of the reset.
+            episode_id (`str`, *optional*):
+                Id of the episode.
+
+        Returns:
+            `StepEnvSessionAdapter`: The session.
+        """
         client = self._client_factory()
-        effective_seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+        if isinstance(task, Mapping) and "split" in task and "index" in task:
+            reset_kwargs = {"split": task["split"], "index": task["index"]}
+            effective_seed = seed
+        else:
+            reset_kwargs = {
+                "dataset_name": self._dataset_name,
+                "dataset_config": self._dataset_config,
+                "size": 1,
+            }
+            effective_seed = seed if seed is not None else random.randint(0, 2**31 - 1)
 
         return StepEnvSessionAdapter(
             client=client,
@@ -110,11 +139,7 @@ class ReasoningGymSessionFactory(ResourceSessionFactory):
                 }
             ],
             tool_result_builder=_build_tool_result(),
-            reset_kwargs={
-                "dataset_name": self._dataset_name,
-                "dataset_config": self._dataset_config,
-                "size": 1,
-            },
+            reset_kwargs=reset_kwargs,
         )
 
 

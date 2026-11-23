@@ -110,6 +110,10 @@ Distinct train and test seeds do not guarantee distinct questions: levels 0 and
 at level 0 and 47 at level 1 also occur in train. Exclude these levels from a
 held-out evaluation or report them separately.
 
+The harness session factory accepts a task spec and forwards its split and
+index to reset, alongside the requested seed and episode id. Without a task,
+it keeps its configured dataset and chooses a random seed when none is given.
+
 ## Building the Docker Image
 
 Before using the environment, you need to build the Docker image:
