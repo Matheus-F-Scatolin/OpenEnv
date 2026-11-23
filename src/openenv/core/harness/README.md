@@ -92,6 +92,7 @@ push_to_hf_hub("/tmp/ttt-sft-v1", "<user>/ttt-sft-v1")
 | `extra` | struct | Free-form annotations supplied by the caller |
 | `outcome` | string | `scored`: the environment ended the episode with a reward. `policy_error`: the harness ended it (no tool call, a turn or tool-call limit) after a step returned `reward` |
 | `error` | string or null | `<Type>: <message>` of the exception that ended the episode (`errors.jsonl` only) |
+| `seed` | int or null | Seed passed to the session factory (`CollectRunner.seeds`, aligned with `tasks`), else null |
 
 `errors.jsonl` — one record per episode without a reward, with the same fields
 and `reward` null. Its `outcome` says why:

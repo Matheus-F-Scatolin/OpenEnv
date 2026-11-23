@@ -103,6 +103,7 @@ class EpisodeRecord:
     outcome: str = "scored"
     # "<Type>: <message>" of the exception that ended the episode, if any.
     error: str | None = None
+    seed: int | None = None
 
     @classmethod
     def from_rollout(
@@ -112,6 +113,7 @@ class EpisodeRecord:
         verify: VerifyResult,
         task: Any = None,
         extra: dict[str, Any] | None = None,
+        seed: int | None = None,
     ) -> "EpisodeRecord":
         """
         Build a record from a harness rollout and its verification.
@@ -136,6 +138,8 @@ class EpisodeRecord:
                 The task spec the episode ran.
             extra (`dict[str, Any]`, *optional*):
                 Annotations supplied by the caller.
+            seed (`int`, *optional*):
+                The seed the episode's session was created with.
 
         Returns:
             `EpisodeRecord`: The record, with its `reward` and `outcome`.
@@ -167,6 +171,7 @@ class EpisodeRecord:
             task=task,
             extra=dict(extra or {}),
             outcome=outcome,
+            seed=seed,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -317,12 +322,29 @@ class CollectResult:
 
 
 class CollectRunner:
-    """Drive repeated rollouts into an append-only JSONL dataset.
+    """
+    Drive repeated rollouts into an append-only JSONL dataset.
 
-    Resume state lives on disk via the ``RolloutSerializer``. Repeatable task
-    iterables, such as lists and tuples, restart at the first task on each
-    ``run()`` so tasks stay aligned with episode ids. One-shot iterators work
-    for one run; reusing them raises ``ValueError`` before accessing results.
+    Resume state lives on disk via the `RolloutSerializer`. Episode `i` gets the
+    `i`-th task and the `i`-th seed, which the session factory receives; an episode
+    past the end of `tasks` or `seeds` gets None. Repeatable iterables, such as lists
+    and tuples, restart at the first item on each `run()` so tasks and seeds stay
+    aligned with episode ids. One-shot iterators work for one run; reusing them
+    raises `ValueError` before accessing results.
+
+    Args:
+        session_factory (`ResourceSessionFactory`):
+            Creates one session per episode from its task and seed.
+        harness_adapter (`HarnessAdapter`):
+            Runs each episode.
+        serializer (`RolloutSerializer`):
+            Writes the records and holds the resume state.
+        tasks (`Iterable[Any]`, *optional*):
+            Task specs, one per episode, in order.
+        seeds (`Iterable[int]`, *optional*):
+            Seeds, one per episode, aligned with `tasks`.
+        limits (`HarnessRunLimits`, *optional*):
+            Turn limit and sampling settings of each episode.
     """
 
     def __init__(
@@ -332,13 +354,15 @@ class CollectRunner:
         harness_adapter: HarnessAdapter,
         serializer: RolloutSerializer,
         tasks: Iterable[Any] | None = None,
+        seeds: Iterable[int] | None = None,
         limits: HarnessRunLimits | None = None,
     ):
         self._session_factory = session_factory
         self._harness_adapter = harness_adapter
         self._serializer = serializer
         self._tasks = tasks
-        self._tasks_used = False
+        self._seeds = seeds
+        self._iterables_used = False
         self._limits = limits
 
     def run(
@@ -351,14 +375,14 @@ class CollectRunner:
         should_keep: Callable[[EpisodeRecord], bool] | None = None,
     ) -> CollectResult:
         task_iterator = iter(self._tasks) if self._tasks is not None else None
-        if (
-            task_iterator is not None
-            and task_iterator is self._tasks
-            and self._tasks_used
-        ):
+        seed_iterator = iter(self._seeds) if self._seeds is not None else None
+        one_shot = (task_iterator is not None and task_iterator is self._tasks) or (
+            seed_iterator is not None and seed_iterator is self._seeds
+        )
+        if one_shot and self._iterables_used:
             raise ValueError(
-                "Cannot reuse a one-shot task iterator; pass a repeatable iterable "
-                "or create a new CollectRunner with a fresh iterator."
+                "Cannot reuse a one-shot task or seed iterator; pass a repeatable "
+                "iterable or create a new CollectRunner with a fresh iterator."
             )
         planned_ids = [f"{episode_id_prefix}-{i:06d}" for i in range(num_episodes)]
 
@@ -397,9 +421,10 @@ class CollectRunner:
 
         with progress:
             for episode_id in planned_ids:
-                # Preserve task-to-episode alignment even when resume skips ids.
-                self._tasks_used = True
+                # Preserve task and seed alignment even when resume skips ids.
+                self._iterables_used = True
                 task = next(task_iterator, None) if task_iterator is not None else None
+                seed = next(seed_iterator, None) if seed_iterator is not None else None
                 if episode_id in already:
                     num_skipped += 1
                     progress.advance(task_id)
@@ -410,6 +435,7 @@ class CollectRunner:
                 try:
                     session = self._session_factory.create(
                         task=task,
+                        seed=seed,
                         episode_id=episode_id,
                     )
                     stage = "rollout"
@@ -428,6 +454,7 @@ class CollectRunner:
                         rollout=rollout,
                         verify=verify,
                         task=task,
+                        seed=seed,
                     )
                 except Exception as exc:
                     # Only an exception from the rollout or verify can be the
@@ -657,6 +684,7 @@ def build_dataset_readme(output_dir: Path) -> str:
             "- `tool_trace` (list of `{tool_name, arguments, result}`)",
             "- `metrics`, `verify_metrics`, `artifacts`",
             "- `task`, `extra` (optional call-site annotations)",
+            "- `seed` (int or null: the seed the session was created with)",
             "",
             "Episodes without a reward are in `errors.jsonl`, with the same fields: "
             "`reward` null, `outcome` `unscored`, `policy_error` or `infra_error`, "
