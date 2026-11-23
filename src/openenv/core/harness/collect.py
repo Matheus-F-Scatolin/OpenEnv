@@ -477,6 +477,8 @@ class CollectRunner:
                         task=task,
                         outcome="infra_error" if infra else "policy_error",
                         error=f"{type(exc).__name__}: {exc}",
+                        seed=seed,
+                        completion_ids=list(rollout.completion_ids) if rollout else [],
                     )
                 finally:
                     if session is not None:

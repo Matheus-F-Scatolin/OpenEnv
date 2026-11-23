@@ -15,18 +15,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import openai
 from openenv.core.evals.base import EvalHarness
 from openenv.core.evals.types import EvalResult
 from openenv.core.harness.collect import (
+    _INFRA_ERRORS,
     _rollout_final_state,
     _tool_trace_to_plain,
     EpisodeRecord,
     RolloutSerializer,
 )
 from openenv.core.harness.rollout import (
-    _resolve_env_reward,
-    _tool_result_reward,
     HarnessAdapter,
     HarnessRolloutResult,
     HarnessRunLimits,
@@ -34,25 +32,8 @@ from openenv.core.harness.rollout import (
     ResourceSessionFactory,
     VerifyResult,
 )
-from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
-
-_ERRORS_FILENAME = "errors.jsonl"
-
-# Failures the policy's output cannot cause: a lost connection to the environment,
-# and the model endpoint's connection, timeout, authentication, routing, rate-limit
-# and server errors. Any other exception raised during a rollout is the policy's.
-_INFRA_ERRORS = (
-    ConnectionError,
-    ConnectionClosed,
-    openai.APIConnectionError,
-    openai.AuthenticationError,
-    openai.PermissionDeniedError,
-    openai.NotFoundError,
-    openai.RateLimitError,
-    openai.InternalServerError,
-)
 
 _DEFAULTS: dict[str, Any] = {
     "limit": None,
@@ -143,29 +124,29 @@ class _Episode:
     def __post_init__(self) -> None:
         if self.rollout is not None:
             self.turns = self.rollout.metrics.get("turns")
-            self.tokens = len(self.rollout.completion_ids) or None
+            # The generated ids, else the provider's count; never re-tokenized.
+            self.tokens = len(self.rollout.completion_ids) or self.rollout.metrics.get(
+                "completion_tokens"
+            )
 
     def to_record(self, episode_id: str) -> EpisodeRecord:
+        """The episode's record, with the fields `openenv collect` writes."""
         rollout, verify = self.rollout, self.verify
-        extra: dict[str, Any] = {
-            "outcome": self.outcome,
-            "seed": self.seed,
-            "sample": self.sample,
-            "completion_tokens": self.tokens,
-        }
-        if self.error is not None:
-            extra["error"] = self.error
         return EpisodeRecord(
             episode_id=episode_id,
             messages=[dict(m) for m in rollout.messages] if rollout else [],
-            reward=self.reward,  # None unless scored
+            reward=self.reward,
             done=bool(rollout and verify and (rollout.done or verify.done)),
             tool_trace=_tool_trace_to_plain(rollout) if rollout else [],
             metrics=dict(rollout.metrics) if rollout else {},
             verify_metrics=dict(verify.metrics) if verify else {},
             artifacts=dict(verify.artifacts) if verify else {},
             task=self.task,
-            extra=extra,
+            extra={"sample": self.sample},
+            outcome=self.outcome,
+            error=self.error,
+            seed=self.seed,
+            completion_ids=list(rollout.completion_ids) if rollout else [],
         )
 
 
@@ -198,7 +179,8 @@ class EnvEvalHarness(EvalHarness):
     `SequentialSampler` gives, then aggregates the rewards the environment
     returned. It never computes, rounds or fills in a reward.
 
-    Each episode gets one outcome:
+    Each episode gets one outcome, read as `openenv collect` reads it
+    ([`~openenv.core.harness.collect.EpisodeRecord.from_rollout`]):
 
     - `scored`: the environment ended the episode with a reward;
     - `unscored`: the environment ended it with a reward of None, a failure of its own;
@@ -236,11 +218,14 @@ class EnvEvalHarness(EvalHarness):
     | `max_tokens` | `200` | Passed to the model step. |
 
     With `output_dir`, each call to `run` writes a new folder `run-0000`,
-    `run-0001`, ... inside it: `results.jsonl` with the scored episodes, written by
-    [`~openenv.core.harness.collect.RolloutSerializer`], `errors.jsonl` with every
-    other episode (reward None), each record with `outcome`, `seed`, `sample`,
-    `completion_tokens` and, for an exception, `error` in its `extra`, and last
-    `metadata.json`. A run folder that already exists is never written into.
+    `run-0001`, ... inside it, with the files and records of `openenv collect`,
+    written by [`~openenv.core.harness.collect.RolloutSerializer`]: `results.jsonl`
+    with the episodes that have a reward, `errors.jsonl` with the others, and last
+    `metadata.json`. Each record has its `outcome`, `seed`, `completion_ids` and, for
+    an exception, `error`, and the sample number in `extra`. A `policy_error` that
+    the harness ended after a step returned a reward keeps that reward and is in
+    `results.jsonl`; the scores read its outcome, not that reward. A run folder that
+    already exists is never written into.
 
     Before the episodes, `run` checks that two resets of the first task with the
     first seed give the same initial messages, and that the second task gives
@@ -258,7 +243,8 @@ class EnvEvalHarness(EvalHarness):
             The policy, as `CollectRunner.run` takes it, for example
             `build_model_step(OpenAIClient(...))` for an OpenAI-compatible endpoint.
             It receives `temperature` and `max_tokens` in its `sampling` argument;
-            `mean_completion_tokens` needs it to return `completion_ids`.
+            `mean_completion_tokens` needs it to return `completion_ids`, or its
+            provider to report a token count.
         output_dir (`str` or `Path`, *optional*):
             Where the run folders go. Nothing is written without it.
 
@@ -342,6 +328,8 @@ class EnvEvalHarness(EvalHarness):
                   read it with `error_rate`.
                 - `mean_turns`, `mean_completion_tokens` (`float` or `None`): over
                   the episodes whose rollout finished; None if one lacks the count.
+                  An episode's token count is the number of its generated ids, else
+                  the count the model provider reported.
                 - `pass@k`, `pass@k_num_tasks` for each `k` up to
                   `samples_per_task`: the unbiased estimator, averaged over the
                   tasks with at least `k` scored or `policy_error` episodes, and
@@ -445,20 +433,16 @@ class EnvEvalHarness(EvalHarness):
             session.close()
 
         finished = {"rollout": rollout, "verify": verify, "finished": True}
-        trace = rollout.tool_trace
-        if not trace or not trace[-1].result.done:
-            return _Episode(task, seed, sample, "policy_error", **finished)
-        if _tool_result_reward(trace[-1].result) is None:
-            reward = None if verify.env_reward is None else float(verify.env_reward)
-        else:
-            try:
-                reward = _resolve_env_reward(rollout, verify)
-            except ValueError as exc:
-                return _Episode(
-                    task, seed, sample, "infra_error", error=_describe(exc), **finished
-                )
-        outcome = "unscored" if reward is None else "scored"
-        return _Episode(task, seed, sample, outcome, reward=reward, **finished)
+        # Who ended the episode, and its reward, as `openenv collect` reads them.
+        try:
+            record = EpisodeRecord.from_rollout(episode_id, rollout, verify)
+        except ValueError as exc:
+            return _Episode(
+                task, seed, sample, "infra_error", error=_describe(exc), **finished
+            )
+        return _Episode(
+            task, seed, sample, record.outcome, reward=record.reward, **finished
+        )
 
     def _check_reproducible(self, tasks: list[Mapping[str, Any]], seed: int) -> bool:
         """Reset the first task twice and the second once; warn on a failed check."""
@@ -491,11 +475,12 @@ class EnvEvalHarness(EvalHarness):
 
     @staticmethod
     def _write(run_dir: Path, record: EpisodeRecord) -> None:
-        if record.extra["outcome"] == "scored":
+        # The files of `openenv collect`: results.jsonl holds every episode with a
+        # reward, a policy_error that keeps an earlier step's reward included.
+        if record.reward is None:
+            RolloutSerializer(run_dir).write_error(record)
+        else:
             RolloutSerializer(run_dir).write_episode(record)
-            return
-        with (run_dir / _ERRORS_FILENAME).open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record.to_dict(), default=str) + "\n")
 
     @staticmethod
     def _scores(

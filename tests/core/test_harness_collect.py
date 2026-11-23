@@ -1787,3 +1787,28 @@ class TestEpisodeTokenCounts:
         assert result.num_collected == 2
         assert [p["metrics"]["completion_tokens"] for p in payloads] == [4, 4]
         assert [p["completion_ids"] for p in payloads] == [[], []]
+
+
+class TestExceptionRecordFields:
+    def test_exception_record_keeps_seed_and_generated_ids(self, tmp_path: Path):
+        class WithIds(_FakeAdapter):
+            def run_white_box(self, model_step, session, limits=None):
+                rollout = super().run_white_box(model_step, session, limits)
+                rollout.completion_ids = [4, 5, 6]
+                return rollout
+
+        runner = CollectRunner(
+            session_factory=_SessionClassFactory(_VerifyFailsSession),
+            harness_adapter=WithIds(),
+            serializer=RolloutSerializer(tmp_path),
+            tasks=["bad"],
+            seeds=[5],
+        )
+        runner.run(model_step=_noop_model_step, num_episodes=1)
+
+        (row,) = _jsonl(tmp_path / "errors.jsonl")
+        assert (row["outcome"], row["seed"], row["completion_ids"]) == (
+            "infra_error",
+            5,
+            [4, 5, 6],
+        )

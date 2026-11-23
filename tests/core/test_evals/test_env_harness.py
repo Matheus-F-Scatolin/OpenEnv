@@ -157,13 +157,18 @@ class Policy:
     """
 
     def __init__(
-        self, answers: dict[str, Any], *, completion_ids: list[int] | None = None
+        self,
+        answers: dict[str, Any],
+        *,
+        completion_ids: list[int] | None = None,
+        reported_tokens: int | None = None,
     ) -> None:
         self.answers = {
             key: list(value) if isinstance(value, list) else value
             for key, value in answers.items()
         }
         self.completion_ids = completion_ids or []
+        self.reported_tokens = reported_tokens
         self.calls = 0
         self.sampling: list[dict[str, Any]] = []
 
@@ -192,6 +197,7 @@ class Policy:
                 content="",
                 tool_calls=[ToolCall(id="c", name="answer", args={"answer": reply})],
             )
+        response.completion_tokens = self.reported_tokens
         return ModelStepResult(
             response=response, completion_ids=list(self.completion_ids)
         )
@@ -412,7 +418,7 @@ class TestOutcomes:
         assert scores["pass@1_num_tasks"] == 1
         (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
         assert record["reward"] is None
-        assert record["extra"]["outcome"] == "unscored"
+        assert record["outcome"] == "unscored"
 
     def test_final_none_after_earlier_zero_is_unscored(self) -> None:
         late_failure = task("t0", steps=[(0.0, False), (None, True)])
@@ -438,8 +444,8 @@ class TestOutcomes:
         assert scores["mean_reward"] == 1.0
         (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
         assert record["reward"] is None
-        assert record["extra"]["outcome"] == "policy_error"
-        assert "error" not in record["extra"]
+        assert record["outcome"] == "policy_error"
+        assert record["error"] is None
 
     def test_turn_limit_after_rewarded_step_is_policy_error(
         self, tmp_path: Path
@@ -450,16 +456,27 @@ class TestOutcomes:
         assert scores["error_rate"] == 1.0
         assert scores["success_rate"] == 0.0
         assert scores["mean_reward"] is None
-        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
-        assert record["reward"] is None
-        assert record["tool_trace"][0]["result"]["metadata"]["reward"] == 0.5
+        # As `openenv collect` writes it: the earlier reward, marked policy_error.
+        assert records(tmp_path / "run-0000" / "errors.jsonl") == []
+        (record,) = records(tmp_path / "run-0000" / "results.jsonl")
+        assert (record["outcome"], record["reward"]) == ("policy_error", 0.5)
 
     def test_verify_done_is_ignored(self) -> None:
-        not_ended = task("t0", steps=[(0.0, False)] * 2, verify_reward=1.0)
+        not_ended = task("t0", steps=[(0.0, False)] * 2)
         evaluator, _ = harness([not_ended], Policy({"t0": "4"}))
         scores = run(evaluator, max_turns=2)
         assert scores["error_rate"] == 1.0
         assert scores["success_rate"] == 0.0
+
+    def test_mismatch_after_the_harness_ended_it_is_infra(self) -> None:
+        not_ended = task("t0", steps=[(0.0, False)] * 2, verify_reward=1.0)
+        evaluator, _ = harness([not_ended], Policy({"t0": "4"}))
+        assert run(evaluator, max_turns=2)["infra_error_rate"] == 1.0
+
+    def test_final_none_with_a_different_verify_reward_is_infra(self) -> None:
+        late = task("t0", steps=[(0.0, False), (None, True)], verify_reward=1.0)
+        evaluator, _ = harness([late], Policy({"t0": "4"}))
+        assert run(evaluator)["infra_error_rate"] == 1.0
 
     def test_call_to_unknown_tool_is_policy_error(self) -> None:
         evaluator, _ = harness([task("t0")], Policy({"t0": ("tool", "search")}))
@@ -480,8 +497,8 @@ class TestOutcomes:
         assert scores["infra_error_rate"] == pytest.approx(1 / 3)
         assert scores["success_rate"] == 0.5
         (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
-        assert record["extra"]["outcome"] == "infra_error"
-        assert record["extra"]["error"] == f"{type(error).__name__}: {error}"
+        assert record["outcome"] == "infra_error"
+        assert record["error"] == f"{type(error).__name__}: {error}"
         assert record["reward"] is None
         assert record["done"] is False
         assert record["messages"] == []
@@ -520,7 +537,7 @@ class TestOutcomes:
         evaluator, _ = harness([mismatch], Policy({"t0": "4"}), None, tmp_path)
         assert run(evaluator)["infra_error_rate"] == 1.0
         (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
-        assert "verify.env_reward must forward" in record["extra"]["error"]
+        assert "verify.env_reward must forward" in record["error"]
         assert record["messages"]
 
     def test_mismatch_tolerance_is_upstreams(self, tmp_path: Path) -> None:
@@ -769,12 +786,13 @@ class TestOutputFiles:
         (scored,) = records(run_dir / "results.jsonl")
         assert scored["reward"] == 1.0
         assert scored["task"] == tasks[0]
-        assert scored["extra"] == {
-            "outcome": "scored",
-            "seed": 7,
-            "sample": 0,
-            "completion_tokens": None,
-        }
+        assert (scored["outcome"], scored["seed"], scored["error"]) == (
+            "scored",
+            7,
+            None,
+        )
+        assert scored["extra"] == {"sample": 0}
+        assert scored["completion_ids"] == []
 
         errors = records(run_dir / "errors.jsonl")
         assert [r["episode_id"] for r in errors] == [
@@ -782,14 +800,14 @@ class TestOutputFiles:
             "ep-000002",
             "ep-000003",
         ]
-        assert [r["extra"]["outcome"] for r in errors] == [
+        assert [r["outcome"] for r in errors] == [
             "policy_error",
             "unscored",
             "infra_error",
         ]
-        assert errors[2]["extra"]["error"] == "ConnectionError: refused"
-        for record in [scored, *errors]:
-            assert "outcome" not in record and "seed" not in record
+        assert errors[2]["error"] == "ConnectionError: refused"
+        assert [r["seed"] for r in errors] == [7, 7, 7]
+        assert [r["extra"] for r in errors] == [{"sample": 0}] * 3
 
         metadata = json.loads((run_dir / "metadata.json").read_text())
         assert metadata["harness"] == "EnvEvalHarness"
@@ -804,9 +822,14 @@ class TestOutputFiles:
         evaluator, _ = harness([failing], policy, None, tmp_path)
         scores = run(evaluator)
         (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
-        assert record["extra"]["outcome"] == "policy_error"
-        assert record["extra"]["completion_tokens"] == 3
+        assert record["outcome"] == "policy_error"
+        assert record["completion_ids"] == [1, 2, 3]
         assert scores["mean_completion_tokens"] is None
+
+    def test_provider_token_counts_without_ids(self) -> None:
+        policy = Policy({"t0": "4"}, reported_tokens=5)
+        evaluator, _ = harness([task("t0")], policy)
+        assert run(evaluator)["mean_completion_tokens"] == 5
 
     def test_repeated_runs_use_new_folders(self, tmp_path: Path) -> None:
         evaluator, _ = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
