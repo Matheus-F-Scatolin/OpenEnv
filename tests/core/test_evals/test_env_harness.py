@@ -798,6 +798,16 @@ class TestOutputFiles:
         assert metadata["reproducible"] is True
         assert metadata["eval_parameters"]["seeds"] == [7]
 
+    def test_verify_error_keeps_the_token_count(self, tmp_path: Path) -> None:
+        failing = task("t0", verify_error=ValueError("bad"))
+        policy = Policy({"t0": "4"}, completion_ids=[1, 2, 3])
+        evaluator, _ = harness([failing], policy, None, tmp_path)
+        scores = run(evaluator)
+        (record,) = records(tmp_path / "run-0000" / "errors.jsonl")
+        assert record["extra"]["outcome"] == "policy_error"
+        assert record["extra"]["completion_tokens"] == 3
+        assert scores["mean_completion_tokens"] is None
+
     def test_repeated_runs_use_new_folders(self, tmp_path: Path) -> None:
         evaluator, _ = harness([task("t0")], Policy({"t0": "4"}), None, tmp_path)
         run(evaluator)
